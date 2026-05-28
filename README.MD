@@ -8,9 +8,11 @@
       8    Y     888  oo     .d8P  .8'     `888.  .oP     .o
      o8o        o888o 8""88888P'  o88o     o8888o 8888888888
 
-**MSA2** is a old and free x86 two-pass assembler for DOS targets.
-It supports all Intel 8086 instructions and most of the 80186/80286
-instructions.
+**MSA2** is a old and free 8086 two-pass assembler for DOS targets.
+It targets the Intel 8086 instruction set. A handful of 186/286-era
+mnemonics inherited from the original codebase (`PUSHA`, `POPA`,
+`ENTER`, `LEAVE`, `BOUND`) are also accepted; no further 186+
+extensions are planned.
 
 Initialy written by a 14-year old Swedish programmer Robert Ostling
 (in 2000-2001) in Borland C++ 2.0. Now, MSA2 is ported to Watcom C
@@ -21,9 +23,6 @@ just 128K. MSA2 does not require DPMI.
 
 **MSA2** is pretty fast and the only file you'll need to build a program
 is MSA2.EXE (50 KB). It runs fine on my old 286.
-
-**MSA2** - has precompiled binary for DOS and win32. You can compile
-DOS programs in modern windows without DosBox.
 
 I had not test MSA2 in FreeDOS, Linux, windows yet, but there should
 not be any difference where running MSA2.
@@ -39,15 +38,19 @@ To compile your source with MSA2 just type:
 * **-f bin** flat binary output
 * **-f com** .com file
 * **-f texe** .exe file with tiny memory model
-* **-f ovl** .ovl overlay file with tiny memory model (this is the same
-as texe, but with symbol table).
+* **-f rdf** RDOFF2 relocatable object file (NASM-compatible `-f rdf`),
+  with relocations, exported globals and BSS.
 
-Examples how to use overlays - see /original/examples/OVL-TP7/ folder.
+The `-f rdf` target supports a `SECTION` (or `SEGMENT`) directive switching
+between `.text`, `.data` and `.bss`. Use `RESB`, `RESW`, `RESD` inside `.bss`
+to reserve uninitialised storage; use `DB`, `DW`, `DD` in `.data` for
+initialised storage. See `original/doc/rdoff2-spec.md` for the file format.
 
 ## Differences with MSA
 
 * Added missed opcodes
 * Added .exe generation
+* Added .rdf generation
 
 ## Differences with NASM
 
@@ -69,18 +72,20 @@ or
 
     wmake
 
-### Linux
+### Linux / macOS (POSIX)
 
-To build Linux version with GCC:
+A separate POSIX GNU-make file is provided so it does not collide with the
+Watcom `MAKEFILE` (both file names are DOS 8.3-compliant):
 
-    gcc -O3 MSA.C TABLES.C ASSEMBLR.C MISC.C LEX.C -o MSA2
-    strip MSA2
+    cd original/src
+    make -f MAKEGNU.MAK          # build the msa2 binary
+    make -f MAKEGNU.MAK test     # build and run the C89 unit tests
 
 ### windows
 
 To build win32 version with mingw:
 
-    i686-w64-mingw32-gcc -m32 -O3 MSA.C TABLES.C ASSEMBLR.C MISC.C LEX.C -o MSA2W.EXE
+    i686-w64-mingw32-gcc -m32 -O3 -funsigned-char MSA.C TABLES.C ASSEMBLR.C MISC.C LEX.C EXPR.C RDF.C -o MSA2W.EXE
     strip MSA2W.EXE
 
 ## License
