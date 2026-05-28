@@ -32,7 +32,7 @@ SOFTWARE.
 
 #define MAIN_VERSION    1
 #define SUB_VERSION     0
-#define BUILD           15
+#define BUILD           16
 #define PROG_NAME       "MSA2"
 
 #define MAX_LABEL 32
