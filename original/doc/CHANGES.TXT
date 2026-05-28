@@ -23,8 +23,6 @@
         * Renamed all build/test files to DOS 8.3 (Makefile.gnu →
           MAKEGNU.MAK, test_*.c → T_*.C, test_runner.c → RUNNER.C,
           test.h → TEST.H).
-
-        Initial work:
         * Removed .ovl target.
         * Added -f rdf target: RDOFF2 (NASM "rdf") relocatable object
           file with RDFREC_RELOC and RDFREC_SEGRELOC records,

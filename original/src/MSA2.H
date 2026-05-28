@@ -32,7 +32,7 @@ SOFTWARE.
 
 #define MAIN_VERSION    1
 #define SUB_VERSION     0
-#define BUILD           14
+#define BUILD           15
 #define PROG_NAME       "MSA2"
 
 #define MAX_LABEL 32
@@ -101,6 +101,7 @@ typedef uint32_t dword;
 #define OP_CMD_REL16            0X0E
 #define OP_CMD_RM1_SEG          0X0F
 #define OP_CMD_RM2_SEG          0X10
+#define OP_CMD_FAR_PTR          0X11
 
 #define CONST_LABEL 1
 #define CONST_EXPR 2
