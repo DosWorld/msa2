@@ -1,18 +1,13 @@
 all: msa2.exe
 
-msa2: MSA.C TABLES.C ASSEMBLR.C MISC.C LEX.C EXPR.C MSA2.H LEX.H EXPR.H
-	gcc MSA.C TABLES.C ASSEMBLR.C LEX.C MISC.C EXPR.C -O3 -o msa2
-
 msa2.exe: MSA.C TABLES.C ASSEMBLR.C MISC.C LEX.C EXPR.C MSA2.H LEX.H EXPR.H RDF.C RDF.H
 	wcl MSA.C TABLES.C ASSEMBLR.C LEX.C MISC.C EXPR.C RDF.C -fe=msa2.exe -mc -ox -0
 
 clean:
 	del msa2.exe
-	del msa2w.exe
 	del *.obj
 	del *.err
 	del *.ori
 
 install:
 	copy MSA2.EXE ..\BIN\MSA2.EXE
-	copy MSA2W.EXE ..\BINW\MSA2W.EXE
