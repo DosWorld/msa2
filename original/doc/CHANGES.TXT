@@ -1,4 +1,44 @@
 
+        News in version 1.0.15:
+
+        Code review pass (later in the same cycle):
+        * decdigit() now correctly uses `&&` (was `||`, accepted any
+          char as a decimal digit).
+        * get_const() now reports division/modulo by zero instead of
+          letting the host CPU raise SIGFPE.
+        * `END` without an argument is accepted (just stops parsing).
+        * Per-line memset of t_line replaced with field-by-field reset;
+          ~8KB shaved per source line.
+        * SEG operator now errors out cleanly for non-RDF targets
+          (bin/com/texe) instead of silently treating SEGfoo as an
+          undefined constant.
+        * is_reg() now returns int with -1 as the not-found sentinel;
+          -funsigned-char workaround dropped from MAKEGNU.MAK.
+        * Collapsed the nine OP_CMD_RM*/RMLINE_* arms in
+          do_instruction() into a single do_rm_op() helper.
+        * Deduped reloc emission helpers (rseg_for_section /
+          reloc_if_symbol).
+        * Removed dead externs and unused locals; fixed all
+          -Wunused-variable warnings; eliminated stray // C++ comments.
+        * Renamed all build/test files to DOS 8.3 (Makefile.gnu →
+          MAKEGNU.MAK, test_*.c → T_*.C, test_runner.c → RUNNER.C,
+          test.h → TEST.H).
+
+        Initial work:
+        * Removed .ovl target.
+        * Added -f rdf target: RDOFF2 (NASM "rdf") relocatable object
+          file with RDFREC_RELOC and RDFREC_SEGRELOC records,
+          RDFREC_GLOBAL for EXPORT-marked labels, and RDFREC_BSS for
+          .bss reservation.
+        * Added SECTION / SEGMENT directive (.text / .data / .bss) and
+          RESB / RESW / RESD reservation pseudo-ops.
+        * Added the SEG unary operator: "mov ax, seg label" and
+          "dw seg label" produce RDFREC_SEGRELOC records.
+        * Added MAKEGNU.MAK for POSIX / GCC builds; existing MAKEFILE
+          remains Watcom/DOS only.
+        * Added in-process C89 unit tests under original/tests/.
+          Run with: make -f MAKEGNU.MAK test (from original/src/).
+
         News in version 1.0.14:
 
         * Complete rewriten lexer

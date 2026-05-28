@@ -80,6 +80,7 @@ t_constant *add_const(const char* name, int type, int value) {
     c->hash = hash;
     c->type = type;
     c->is_export = 0;
+    c->section = SECTION_TEXT;
     c->next = constants;
     return constants = c;
 }

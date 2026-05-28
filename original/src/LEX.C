@@ -234,6 +234,12 @@ void lex_init() {
     addLex(LEX_END, "END");
 
     addLex(LEX_EXPORT, "EXPORT");
+    addLex(LEX_IMPORT, "IMPORT");
+    addLex(LEX_SECTION, "SECTION");
+    addLex(LEX_SECTION, "SEGMENT");
+    addLex(LEX_RESB, "RESB");
+    addLex(LEX_RESW, "RESW");
+    addLex(LEX_RESD, "RESD");
 
     addLex(LEX_CS2DOT, "CS:");
     addLex(LEX_DS2DOT, "DS:");
@@ -243,6 +249,7 @@ void lex_init() {
     addLex(LEX_SHORT, "SHORT");
     addLex(LEX_NEAR, "NEAR");
     addLex(LEX_FAR, "FAR");
+    addLex(LEX_SEG, "SEG");
     addLex(LEX_EQU, "EQU");
 }
 

@@ -3,7 +3,7 @@
 MIT License
 
 Copyright (c) 2000, 2001, 2019 Robert Ostling
-Copyright (c) 2019 DosWorld
+Copyright (c) 2019-2026 DosWorld
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -41,9 +41,11 @@ SOFTWARE.
 #define TARGET_BIN 1
 #define TARGET_COM 2
 #define TARGET_TEXE 3
-#define TARGET_OVL 100
+#define TARGET_RDF 4
 
-#define EXPORT_NAME_LENGTH 32
+#define SECTION_TEXT 0
+#define SECTION_DATA 1
+#define SECTION_BSS  2
 
 #define MSA_MALLOC(x) msa_malloc(x)
 
@@ -100,15 +102,12 @@ typedef uint32_t dword;
 #define OP_CMD_RM1_SEG          0X0F
 #define OP_CMD_RM2_SEG          0X10
 
-#define OVL_SYMTAB_MAGIK        0xFE33
-
 #define CONST_LABEL 1
 #define CONST_EXPR 2
 #define CONST_BSS 3
-#define CONST_UNDEF 0x80
+#define CONST_DATA 4
+#define CONST_IMPORT 5
 
-#define IS_CONST_UNDEF(x) (((x)->type & CONST_UNDEF) != 0)
-#define IS_CONST_DEF(x) (((x)->type & CONST_UNDEF) == 0)
 #define CONST_TYPE(x) ((x)->type & 0x7f)
 
 typedef struct {
@@ -118,6 +117,7 @@ typedef struct {
     int     disp;
     byte    op_len;
     byte    op[0x06];
+    const char *disp_src; /* original expression for disp, or NULL */
 } t_address;
 
 typedef struct {
@@ -125,6 +125,7 @@ typedef struct {
     char is_export;
     int hash;
     char type;
+    char section;   /* SECTION_TEXT / SECTION_DATA / SECTION_BSS, for CONST_LABEL/CONST_DATA/CONST_BSS */
     int value;
     void *next;
 } t_constant;
@@ -149,14 +150,16 @@ typedef struct {
     char p2[4096];
 } t_line;
 
-#pragma pack(push)
-#pragma pack(1)
-typedef struct {
-    char  name[EXPORT_NAME_LENGTH];
-    word  ofs;
-    word  flags;
-} t_ovl_export;
-#pragma pack(pop)
+/* RDF relocation record (in-memory; serialised by RDF.C). */
+typedef struct t_reloc {
+    byte    seg;          /* segment being patched: SECTION_TEXT or SECTION_DATA */
+    dword   ofs;          /* offset within that segment */
+    byte    width;        /* 1, 2, 4 */
+    word    rseg;         /* target reference segment: 0=code,1=data,2=bss */
+    byte    relative;     /* nonzero => bit 6 (0x40) of RELOC flags */
+    byte    is_segreloc;  /* nonzero => emit RDFREC_SEGRELOC (type 6) instead of RDFREC_RELOC */
+    struct t_reloc *next;
+} t_reloc;
 
 extern t_instruction instr86[];
 
@@ -173,11 +176,9 @@ extern int get_type(const char* s);
 extern int hashCode(const char *str);
 extern int get_number(char* s);
 extern int get_address(t_address* a, char* s);
-extern void get_line(char* s);
-extern void split(char* s);
 
 extern char err_msg[];
-extern int errors, warnings, pass, passes, params;
+extern int errors, warnings, pass, passes;
 extern word outptr;
 extern byte quiet;
 extern byte *outprog;
@@ -188,7 +189,17 @@ extern long int linenr;
 extern char *param[2];
 extern int param_type[2];
 extern word old_outptr;
-extern word ptr;
+
+extern int target;
+extern int cur_section;     /* SECTION_TEXT / SECTION_DATA / SECTION_BSS */
+extern byte *dataprog;      /* data segment buffer (RDF only) */
+extern word dataptr;        /* data write pointer */
+extern dword bss_amount;    /* bytes reserved in .bss (RDF only) */
+extern t_reloc *relocs;     /* head of reloc list (RDF only) */
+extern word code_size;
+
+extern void add_reloc(byte seg, dword ofs, byte width, word rseg, byte relative);
+extern void add_segreloc(byte seg, dword ofs, word rseg);
 
 extern int get_const(const char *s);
 extern char *get_dword(char *s, long int *x);

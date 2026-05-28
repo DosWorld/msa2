@@ -25,15 +25,18 @@
                 What's MSA?
                 -=-=-=-=-=-
 
-        MSA2 is a old free x86 assembler. It supports all 8086
-        instructions and most of the 80186/80286 instructions. It
-        supports formats:
+        MSA2 is a old free 8086 assembler. It targets the Intel 8086
+        instruction set; a handful of 186/286-era mnemonics inherited
+        from the original codebase (PUSHA, POPA, ENTER, LEAVE, BOUND)
+        are also accepted but no further 186+ extensions are planned.
+        MSA2 supports formats:
 
            * flat binary output -fbin
            * .com file -fcom
-           * .exe file with tiny memory model -ftexe.
-           * .ovl overlay file with tiny memory model -fovl (this
-             is the same as texe, but with symbol table).
+           * .exe file with tiny memory model -ftexe
+           * RDOFF2 relocatable object file -frdf (NASM-compatible
+             "-f rdf"; with relocations, exported globals, BSS,
+             SECTION switching and the SEG operator)
 
         Initialy written by a 14-year old Swedish programmer (that's
         why my english isn't very good)-:
@@ -102,16 +105,6 @@
 
         =============================================================
 
-                -b              - Set buffer size
-
-        Use: -b 0x400, -b 0x100
-
-        This option changes the size of the output buffer kept in
-        memory. Should be a value between 0x100 (256) and 0x4000
-        (16 KB).
-
-        =============================================================
-
                 -m              - Set output level
 
         Use: -m 0, -m 1, -m 2
@@ -124,12 +117,17 @@
 
                 -f              - Set destination format
 
-        Use: -f bin, -f com, -f texe, -f ovl
+        Use: -f bin, -f com, -f texe, -f rdf
 
-        fbin means:  raw binary
-        fcom means:  DOS .com file
+        fbin  means: raw binary
+        fcom  means: DOS .com file
         ftexe means: DOS .exe file with tiny memory model
-        fovl means: the same as texe but with symbol table at end
+        frdf  means: RDOFF2 (NASM "-f rdf") relocatable object file.
+                     Code, optional data and BSS sections; EXPORT-marked
+                     labels become public globals; references to labels
+                     between sections produce RDFREC_RELOC records; the
+                     SEG operator produces RDFREC_SEGRELOC records. See
+                     doc/rdoff2-spec.md for the file format.
 
         =============================================================
 
@@ -156,12 +154,10 @@
         Constants
         =========
 
-        There are two ways of declaring constants in MSA2.
+        Constants are declared with EQU:
 
-        1.      ident   EQU     value
-        2.      CONST   ident   value
+                ident   EQU     value
 
-        I recommend the first way, for compatibility with NASM.
         A constant value may use following operators:
                 '+', '-', '*', '/' and '%'
         But NOT:
@@ -229,6 +225,49 @@ my_dd:  DD      0x23a36b14,0x552814,0x5ba4382,0x1000000,4,51,6
         shl1    ax
         ror1    bl
         ...
+
+
+        Sections (RDF target)
+        =====================
+
+        When producing RDOFF2 (-f rdf) the source can be split into
+        three sections. SECTION (or SEGMENT) switches between them.
+        The default section is .text.
+
+                SECTION .text   ; code
+                SECTION .data   ; initialised data (DB/DW/DD)
+                SECTION .bss    ; uninitialised data (RESB/RESW/RESD)
+
+        Instructions are only valid in .text. DB/DW/DD work in .text
+        and .data. In .bss use:
+
+                var:    RESB    N       ; reserve N bytes
+                var:    RESW    N       ; reserve N words
+                var:    RESD    N       ; reserve N dwords
+
+        EXPORT
+        ======
+
+        The EXPORT directive marks a previously defined label as a
+        public symbol in the RDF output. It becomes a RDFREC_GLOBAL
+        record. The directive is silently ignored for non-RDF targets.
+
+                EXPORT  start
+
+
+        The SEG operator
+        ================
+
+        seg <label> evaluates at link time to the paragraph (segment
+        base) of the section in which <label> lives. The assembler
+        emits a zero placeholder for the 16-bit slot and records a
+        RDFREC_SEGRELOC against the target. Two forms are supported:
+
+                mov ax, seg msg         ; load DS from a data label
+                dw  seg msg             ; store the segment word in .data
+
+        The operator is meaningful only with -f rdf (the value is
+        supplied by the linker at link time).
 
 
                 23:31 24 Nov 2019

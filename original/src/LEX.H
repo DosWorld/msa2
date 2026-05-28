@@ -38,10 +38,16 @@ SOFTWARE.
 #define LEX_ORG 104
 #define LEX_EQU 105
 #define LEX_END 106
+#define LEX_SECTION 107
+#define LEX_RESB 108
+#define LEX_RESW 109
+#define LEX_RESD 130
 
 #define LEX_SHORT 110
 #define LEX_NEAR 111
 #define LEX_FAR 112
+#define LEX_SEG 113
+#define LEX_IMPORT 114
 
 #define LEX_CS2DOT 120
 #define LEX_DS2DOT 121

@@ -3,7 +3,7 @@
 MIT License
 
 Copyright (c) 2000, 2001, 2019 Robert Ostling
-Copyright (c) 2019 DosWorld
+Copyright (c) 2019-2026 DosWorld
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -113,7 +113,14 @@ void build_address(t_address *a) {
     }
 }
 
-char is_reg(const char *s, const char *k, char badVal) {
+/* Return the zero-based index of the register `s` in the lookup table
+ * `k` (which is a flat string of 2-char register names). The return is
+ * `int` (not `char`) and the sentinel for "not found" is -1; previous
+ * versions returned `char` and used 255, which sign-extended to -1 on
+ * signed-char hosts and broke get_type() unless the build forced
+ * -funsigned-char. Using a wide return + signed sentinel removes the
+ * platform-specific workaround. */
+int is_reg(const char *s, const char *k) {
     int i;
     char c1, c2, r1, r2;
 
@@ -122,7 +129,7 @@ char is_reg(const char *s, const char *k, char badVal) {
     c2 = *s;
     s++;
     if(*s != 0) {
-        return badVal;
+        return -1;
     }
 
     i = 0;
@@ -135,20 +142,15 @@ char is_reg(const char *s, const char *k, char badVal) {
         }
         i++;
     }
-    return badVal;
+    return -1;
 }
 
 int get_type(const char* s) {
-    char i;
+    int i = is_reg(s, "ALCLDLBLAHCHDHBHAXCXDXBXSPBPSIDIESCSSSDS");
 
-    i = is_reg(s, "ALCLDLBLAHCHDHBHAXCXDXBXSPBPSIDIESCSSSDS", 64);
-    if(i < 8) {
-        return ACC_8 + i;
-    } else if(i < 16) {
-        return ACC_16 + i - 8;
-    } else if(i != 64) {
-        return SEG + i - 16;
-    }
+    if(i >= 0 && i < 8)  return ACC_8  + i;
+    if(i >= 8 && i < 16) return ACC_16 + i - 8;
+    if(i >= 16)          return SEG    + i - 16;
 
     if(s[4] == '[') {
         if(!memcmp(s,"BYTE[", 5)) return MEM_8;
@@ -165,7 +167,7 @@ char inline bindigit(char c) {
 }
 
 char inline decdigit(char c) {
-    if(c >= '0' || c <= '9') return c - '0';
+    if(c >= '0' && c <= '9') return c - '0';
     out_msg_chr("Invalid decimal digit %c", 0, c);
     return 0;
 }
@@ -274,7 +276,10 @@ int get_const(const char* s) {
                 x = get_number(tmp);
             } else {
                 if((c = find_const(tmp)) != NULL) {
-                    x = c->value;
+                    /* Imports have no value at assemble time; the linker
+                     * patches the real address. Reading them here yields
+                     * 0 so the patch site holds the standard addend. */
+                    x = CONST_TYPE(c) == CONST_IMPORT ? 0 : c->value;
                 } else {
                     if(pass) {
                         out_msg_str("Undefined constant '%s'", 1, tmp);
@@ -294,9 +299,17 @@ int get_const(const char* s) {
             value *= x;
             break;
         case '/':
+            if(x == 0) {
+                out_msg("Division by zero in constant expression", 0);
+                break;
+            }
             value /= x;
             break;
         case '%':
+            if(x == 0) {
+                out_msg("Modulo by zero in constant expression", 0);
+                break;
+            }
             value = value % x;
             break;
         default:
@@ -323,9 +336,10 @@ int get_address(t_address* a, char* s) {
     char c1, j1, j2;
     byte seg_pre;
 
-    i = is_reg(s, "ALCLDLBLAHCHDHBHAXCXDXBXSPBPSIDI", 255);
+    a->disp_src = NULL;
+    i = is_reg(s, "ALCLDLBLAHCHDHBHAXCXDXBXSPBPSIDI");
 
-    if(i < 16) {
+    if(i >= 0 && i < 16) {
         a->rm = i < 8 ? i : i - 8;
         a->mod = 3;
         return 0;
@@ -395,13 +409,14 @@ int get_address(t_address* a, char* s) {
         a->rm = 6;
         s[strlen(s) - 1] = 0;
         a->disp = get_const(s);
+        a->disp_src = s;
         return 0;
     }
 
     if(is_math(*s)) {
         s[strlen(s) - 1] = 0;
         a->disp = get_const(s);
-// HERE ??
+        a->disp_src = s;
         a->mod = a->disp < 0x80 ? 1 : 2;
     } else {
         a->mod = 0;
@@ -554,6 +569,11 @@ void split_line(t_line *cur, char *line, char *a1) {
             if(c2 == 'B' || c2 == 'W' || c3 == 'D') {
                 full_param = 1;
             }
+        }
+        /* IMPORT takes a comma-separated symbol list; treat the rest of
+         * the line as one parameter so the dispatch can split on commas. */
+        if(!full_param && !strcmp(cur->cmd, "IMPORT")) {
+            full_param = 1;
         }
     }
 
