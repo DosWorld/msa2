@@ -397,6 +397,40 @@ inline void do_instruction(t_instruction *cinstr) {
             out_word(get_const(param[op1])-(outptr + 2));
             break;
         }
+        case OP_CMD_FAR_PTR: {
+            /* JMP FAR label / CALL FAR label: emit a 4-byte far pointer
+             * (offset16 then segment16). RDF-only — the linker resolves
+             * both halves from the symbol via a normal RELOC plus a
+             * SEGRELOC. */
+            t_constant *sc;
+            dword patch_ofs;
+            word rseg;
+            if(target != TARGET_RDF) {
+                if(pass) {
+                    out_msg("direct far jmp/call is only valid for -f rdf target", 0);
+                }
+                out_word(0);
+                out_word(0);
+                break;
+            }
+            sc = single_symbol_ref(param[op1]);
+            if(sc == NULL) {
+                if(pass) {
+                    out_msg("direct far jmp/call requires a symbol operand", 0);
+                }
+                out_word(0);
+                out_word(0);
+                break;
+            }
+            rseg = rseg_for_symbol(sc);
+            patch_ofs = outptr;
+            add_reloc((byte)cur_section, patch_ofs, 2, rseg, 0);
+            out_word(0);
+            patch_ofs = outptr;
+            add_segreloc((byte)cur_section, patch_ofs, rseg);
+            out_word(0);
+            break;
+        }
         }
         j += 2;
     }
@@ -679,7 +713,15 @@ int assemble(char* fname) {
                 if(lex1 != cinstr->lex1) {
                     break;
                 }
-                if(lex1 != cinstr->lex1 || (cinstr->lex2 != LEX_NONE && lex2 != cinstr->lex2)) {
+                /* If user wrote SHORT/NEAR/FAR, require the table entry's
+                 * lex2 to match exactly. If user didn't (lex2==LEX_NONE),
+                 * only skip table entries that restrict lex2. */
+                if(lex2 != LEX_NONE) {
+                    if(cinstr->lex2 != lex2) {
+                        cinstr++;
+                        continue;
+                    }
+                } else if(cinstr->lex2 != LEX_NONE) {
                     cinstr++;
                     continue;
                 }

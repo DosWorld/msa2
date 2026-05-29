@@ -1,4 +1,25 @@
 
+        News in version 1.0.16:
+
+        * Added IMPORT directive (RDF target). Declares external
+          symbols supplied at link time; each name becomes a
+          RDFREC_IMPORT record with a unique segid starting at 3.
+          Imported names are usable in MOV imm16, MOV [mem],
+          DW / DD, CALL rel16, JMP rel16, and SEG operand forms
+          (RDFREC_RELOC absolute or relative per context). JMP SHORT
+          / Jcc / LOOP to an import is rejected (out of range).
+        * Added JMP FAR / CALL FAR. Direct form (JMP FAR <symbol>)
+          emits EA / 9A + offset16:segment16 with a RDFREC_RELOC
+          on the offset slot and a RDFREC_SEGRELOC on the segment
+          slot — RDF-only. Indirect form (JMP FAR [mem]) emits
+          FF /5 (jmp) or FF /3 (call) and works for any target.
+          Register operands and numeric operands are rejected.
+        * Instruction matcher tightened: user-written SHORT / NEAR /
+          FAR is now a hard constraint. Previously a table entry
+          with LEX_NONE would silently absorb any user-specified
+          lex2, so e.g. JMP FAR <r16> fell through to the near
+          FF /4 form. Now unsupported forms produce "Syntax error".
+
         News in version 1.0.15:
 
         Code review pass (later in the same cycle):

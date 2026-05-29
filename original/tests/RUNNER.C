@@ -66,6 +66,12 @@ int test_asm_import_jmp_short_rejected(void);
 int test_asm_import_dw(void);
 int test_asm_import_disp16_mem(void);
 int test_asm_import_rejected_for_non_rdf(void);
+int test_asm_jmp_far_direct_import(void);
+int test_asm_call_far_direct_local(void);
+int test_asm_jmp_far_direct_rejected_for_non_rdf(void);
+int test_asm_jmp_far_indirect_mem(void);
+int test_asm_call_far_indirect_mem(void);
+int test_asm_jmp_far_reg_rejected(void);
 
 typedef int (*test_fn)(void);
 
@@ -123,6 +129,12 @@ static struct test_entry all_tests[] = {
     { "asm_import_dw",              test_asm_import_dw },
     { "asm_import_disp16_mem",      test_asm_import_disp16_mem },
     { "asm_import_rejected_for_non_rdf", test_asm_import_rejected_for_non_rdf },
+    { "asm_jmp_far_direct_import",  test_asm_jmp_far_direct_import },
+    { "asm_call_far_direct_local",  test_asm_call_far_direct_local },
+    { "asm_jmp_far_direct_rejected_for_non_rdf", test_asm_jmp_far_direct_rejected_for_non_rdf },
+    { "asm_jmp_far_indirect_mem",   test_asm_jmp_far_indirect_mem },
+    { "asm_call_far_indirect_mem",  test_asm_call_far_indirect_mem },
+    { "asm_jmp_far_reg_rejected",   test_asm_jmp_far_reg_rejected },
 
     { NULL, NULL }
 };

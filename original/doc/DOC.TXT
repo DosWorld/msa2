@@ -1,6 +1,6 @@
 
 
-                MSA2 1.0 (BUILD 14)
+                MSA2 1.0 (BUILD 16)
                 -=-=-=-=-=-=-=-=-=-
         Copyright(C) 2000 - 2019 Robert Ostling (robost86@hotmail.com)
         Copyright(C) 2019 DosWord (dosworld@tutanota.com)
@@ -255,6 +255,23 @@ my_dd:  DD      0x23a36b14,0x552814,0x5ba4382,0x1000000,4,51,6
                 EXPORT  start
 
 
+        IMPORT (RDF only)
+        =================
+
+        The IMPORT directive declares one or more external symbols
+        supplied at link time by another module. Each name produces
+        a RDFREC_IMPORT record in the RDF output and may be used
+        anywhere a local label is, in the same instruction forms.
+
+                IMPORT  printf
+                IMPORT  open, read, close
+
+        IMPORT must precede first use. It is only valid with -f rdf;
+        other targets emit an error. JMP SHORT / Jcc / LOOP to an
+        imported symbol is rejected (the 8-bit range cannot cover
+        cross-module references).
+
+
         The SEG operator
         ================
 
@@ -268,6 +285,44 @@ my_dd:  DD      0x23a36b14,0x552814,0x5ba4382,0x1000000,4,51,6
 
         The operator is meaningful only with -f rdf (the value is
         supplied by the linker at link time).
+
+
+        JMP/CALL FAR
+        ============
+
+        Two far-control-transfer forms are supported, distinguished
+        by operand syntax:
+
+        Direct far: JMP FAR <symbol> / CALL FAR <symbol>
+        ------------------------------------------------
+
+        Emits EA / 9A followed by a 4-byte far pointer (offset16,
+        then segment16). RDF-only — the linker resolves both halves
+        from the symbol via a RDFREC_RELOC on the offset slot and a
+        RDFREC_SEGRELOC on the segment slot. The symbol may be local
+        (label/data/bss) or imported.
+
+                IMPORT  far_handler
+                        JMP FAR  far_handler    ; ea 00 00 00 00
+                        CALL FAR far_handler    ; 9a 00 00 00 00
+
+        For bin/com/texe targets this form is rejected (there is no
+        way to fill the segment half without a linker). Numeric
+        operands (e.g. JMP FAR 0x1234) are also rejected — the
+        immediate-pair syntax is not supported.
+
+        Indirect far: JMP FAR [mem] / CALL FAR [mem]
+        --------------------------------------------
+
+        Emits FF /5 (jmp) or FF /3 (call) with the standard 16-bit
+        modrm. The CPU loads a 4-byte offset:segment pair from [mem]
+        at runtime. Valid for any target.
+
+                JMP FAR  [vector]               ; ff 2e + disp16
+                CALL FAR [vector]               ; ff 1e + disp16
+
+        Register operands (e.g. JMP FAR AX) have no 8086 encoding
+        and are rejected at parse time.
 
 
                 23:31 24 Nov 2019

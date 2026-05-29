@@ -674,3 +674,220 @@ int test_asm_bss_resb_resw(void) {
     remove(TMP_ASM);
     return 0;
 }
+
+int test_asm_jmp_far_direct_import(void) {
+    /* `jmp far foo` for imported foo (RDF target):
+     *   ea 00 00 00 00  + RELOC(width=2, rseg=import_id, abs)
+     *                   + SEGRELOC(rseg=import_id)
+     * Both relocs target the same rseg (the import id). */
+    extern byte *outprog;
+    extern word outptr;
+    extern t_reloc *relocs;
+    t_reloc *r;
+    int count = 0;
+    int saw_reloc = 0, saw_segreloc = 0;
+
+    reset_asm_state(TARGET_RDF);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "import foo\n"
+        "    jmp far foo\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(6, outptr);
+    TEST_ASSERT_EQ_INT(0xea, outprog[0]);
+    TEST_ASSERT_EQ_INT(0x00, outprog[1]);
+    TEST_ASSERT_EQ_INT(0x00, outprog[2]);
+    TEST_ASSERT_EQ_INT(0x00, outprog[3]);
+    TEST_ASSERT_EQ_INT(0x00, outprog[4]);
+    TEST_ASSERT_EQ_INT(0xc3, outprog[5]);
+
+    for(r = relocs; r != NULL; r = r->next) {
+        count++;
+        if(r->is_segreloc) {
+            saw_segreloc = 1;
+            TEST_ASSERT_EQ_INT(SECTION_TEXT, r->seg);
+            TEST_ASSERT_EQ_INT(3, r->ofs);     /* segment16 at offset 3 */
+            TEST_ASSERT_EQ_INT(2, r->width);
+            TEST_ASSERT_EQ_INT(3, r->rseg);    /* import id */
+        } else {
+            saw_reloc = 1;
+            TEST_ASSERT_EQ_INT(SECTION_TEXT, r->seg);
+            TEST_ASSERT_EQ_INT(1, r->ofs);     /* offset16 at offset 1 */
+            TEST_ASSERT_EQ_INT(2, r->width);
+            TEST_ASSERT_EQ_INT(3, r->rseg);    /* import id */
+            TEST_ASSERT_EQ_INT(0, r->relative);
+        }
+    }
+    TEST_ASSERT_EQ_INT(2, count);
+    TEST_ASSERT_EQ_INT(1, saw_reloc);
+    TEST_ASSERT_EQ_INT(1, saw_segreloc);
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_call_far_direct_local(void) {
+    /* `call far foo` for a local label in .text (RDF target):
+     *   9a 00 00 00 00  + RELOC(width=2, rseg=text=0, abs)
+     *                   + SEGRELOC(rseg=text=0)
+     * The offset reloc points to foo's offset; the segment reloc carries
+     * the .text paragraph base — both linker-resolved. */
+    extern byte *outprog;
+    extern word outptr;
+    extern t_reloc *relocs;
+    t_reloc *r;
+    int count = 0;
+    int saw_reloc = 0, saw_segreloc = 0;
+
+    reset_asm_state(TARGET_RDF);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "    call far foo\n"
+        "foo:\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(6, outptr);
+    TEST_ASSERT_EQ_INT(0x9a, outprog[0]);
+    TEST_ASSERT_EQ_INT(0xc3, outprog[5]);
+
+    for(r = relocs; r != NULL; r = r->next) {
+        count++;
+        if(r->is_segreloc) {
+            saw_segreloc = 1;
+            TEST_ASSERT_EQ_INT(3, r->ofs);
+            TEST_ASSERT_EQ_INT(0, r->rseg);    /* .text segid */
+        } else {
+            saw_reloc = 1;
+            TEST_ASSERT_EQ_INT(1, r->ofs);
+            TEST_ASSERT_EQ_INT(0, r->rseg);    /* .text segid */
+            TEST_ASSERT_EQ_INT(0, r->relative);
+        }
+    }
+    TEST_ASSERT_EQ_INT(2, count);
+    TEST_ASSERT_EQ_INT(1, saw_reloc);
+    TEST_ASSERT_EQ_INT(1, saw_segreloc);
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_jmp_far_direct_rejected_for_non_rdf(void) {
+    /* Direct far jmp/call (immediate symbol form) can only be resolved
+     * by the RDF linker. For bin/com/texe targets it must error. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "foo:\n"
+        "    jmp far foo\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_jmp_far_indirect_mem(void) {
+    /* `jmp far [foo]` is the FF /5 form (m16:16 indirect). The CPU
+     * fetches a 4-byte offset:segment pair from memory and jumps to it.
+     * ModRM byte: mod=00, reg=5 (sub-opcode), rm=110b → 0x2E.
+     * For a local data label foo at .data offset 0, the disp word holds
+     * 0 with an RDF RELOC pointing at the .data segment.
+     *
+     *   FF 2E 00 00      jmp far [foo]
+     *   C3               ret
+     */
+    extern byte *outprog;
+    extern word outptr;
+    extern t_reloc *relocs;
+    t_reloc *r;
+    int count = 0;
+
+    reset_asm_state(TARGET_RDF);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "    jmp far [foo]\n"
+        "    ret\n"
+        "section .data\n"
+        "foo:\n"
+        "    dd 0\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(5, outptr);
+    TEST_ASSERT_EQ_INT(0xff, outprog[0]);
+    TEST_ASSERT_EQ_INT(0x2e, outprog[1]);    /* mod=00, reg=5, rm=110 */
+    TEST_ASSERT_EQ_INT(0x00, outprog[2]);
+    TEST_ASSERT_EQ_INT(0x00, outprog[3]);
+    TEST_ASSERT_EQ_INT(0xc3, outprog[4]);
+
+    for(r = relocs; r != NULL; r = r->next) count++;
+    TEST_ASSERT_EQ_INT(1, count);
+    TEST_ASSERT_EQ_INT(0, relocs->is_segreloc);
+    TEST_ASSERT_EQ_INT(SECTION_TEXT, relocs->seg);
+    TEST_ASSERT_EQ_INT(2, relocs->ofs);      /* disp word follows FF + modrm */
+    TEST_ASSERT_EQ_INT(2, relocs->width);
+    TEST_ASSERT_EQ_INT(1, relocs->rseg);     /* .data segid */
+    TEST_ASSERT_EQ_INT(0, relocs->relative);
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_call_far_indirect_mem(void) {
+    /* `call far [foo]` is FF /3 — same modrm layout as jmp far indirect
+     * but reg field is 3. For .data label foo at offset 0:
+     *
+     *   FF 1E 00 00      call far [foo]   (mod=00, reg=3, rm=110)
+     *   C3               ret
+     */
+    extern byte *outprog;
+    extern word outptr;
+
+    reset_asm_state(TARGET_RDF);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "    call far [foo]\n"
+        "    ret\n"
+        "section .data\n"
+        "foo:\n"
+        "    dd 0\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(5, outptr);
+    TEST_ASSERT_EQ_INT(0xff, outprog[0]);
+    TEST_ASSERT_EQ_INT(0x1e, outprog[1]);    /* mod=00, reg=3, rm=110 */
+    TEST_ASSERT_EQ_INT(0xc3, outprog[4]);
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_jmp_far_reg_rejected(void) {
+    /* `jmp far ax` (or any register) is not a real 8086 form — the far
+     * indirect path requires a memory operand (m16:16). Must error. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_RDF);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "    jmp far ax\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+
+    remove(TMP_ASM);
+    return 0;
+}
