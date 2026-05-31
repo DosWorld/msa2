@@ -175,7 +175,7 @@ void done(int code) {
 
 void help(int code) {
     printf("%s assembler Version %d.%d (build %d)\nCopyright(C) 2000, 2001, 2019 Robert Ostling\nCopyright(C) 2019-2026 DosWorld\nMIT License https://opensource.org/licenses/MIT\n\n",PROG_NAME,MAIN_VERSION,SUB_VERSION,BUILD);
-    printf("%s file.asm -ofile.com [-options]\n\n"
+    printf("%s file.asm -o file.com [-options]\n\n"
            "options:\n"
            "\t-s xxxx     set starting point to xxxx (default 0x100)\n"
            "\t-m x        set error/waning level (default 2)\n"

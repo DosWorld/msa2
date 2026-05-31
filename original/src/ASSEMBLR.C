@@ -31,9 +31,11 @@ SOFTWARE.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include "MSA2.H"
 #include "LEX.H"
 #include "EXPR.H"
+#include "MACRO.H"
 
 long int linenr;
 word old_outptr;
@@ -45,16 +47,20 @@ int param_type[2];
  * already-allocated CONST_IMPORT entries and reuses them. */
 static word next_import_id;
 
-inline void out_word(int x) {
-    outprog[outptr++] = x & 0xff;
-    outprog[outptr++] = (char)(x >> 8) & 0xff;
+/* Preprocessor (%define / %macro / %include) implementation moved to
+ * MACRO.C. ASSEMBLR.C only orchestrates: it detects directives in
+ * the read loop and dispatches to pp_* helpers. */
+
+inline void out_word(int32_t x) {
+    outprog[outptr++] = (byte)(x & 0xff);
+    outprog[outptr++] = (byte)((x >> 8) & 0xff);
 }
 
-inline void out_long(long int x) {
-    outprog[outptr++] = x & 0xff;
-    outprog[outptr++] = (char)(x >> 8) & 0xff;
-    outprog[outptr++] = (char)(x >> 16) & 0xff;
-    outprog[outptr++] = (char)(x >> 24) & 0xff;
+inline void out_long(int32_t x) {
+    outprog[outptr++] = (byte)(x & 0xff);
+    outprog[outptr++] = (byte)((x >> 8) & 0xff);
+    outprog[outptr++] = (byte)((x >> 16) & 0xff);
+    outprog[outptr++] = (byte)((x >> 24) & 0xff);
 }
 
 /* Section-aware emit. SECTION_TEXT writes to outprog/outptr; SECTION_DATA
@@ -77,16 +83,16 @@ static void emit_byte(byte v) {
     }
 }
 
-static void emit_word_val(int v) {
-    emit_byte(v & 0xff);
-    emit_byte((v >> 8) & 0xff);
+static void emit_word_val(int32_t v) {
+    emit_byte((byte)(v & 0xff));
+    emit_byte((byte)((v >> 8) & 0xff));
 }
 
-static void emit_long_val(long int v) {
-    emit_byte(v & 0xff);
-    emit_byte((v >> 8) & 0xff);
-    emit_byte((v >> 16) & 0xff);
-    emit_byte((v >> 24) & 0xff);
+static void emit_long_val(int32_t v) {
+    emit_byte((byte)(v & 0xff));
+    emit_byte((byte)((v >> 8) & 0xff));
+    emit_byte((byte)((v >> 16) & 0xff));
+    emit_byte((byte)((v >> 24) & 0xff));
 }
 
 /* If 's' refers to a single label/data/bss/import symbol (no math, no
@@ -94,7 +100,7 @@ static void emit_long_val(long int v) {
  * emit a relocation record for the about-to-be-patched word.
  */
 static t_constant *single_symbol_ref(const char *s) {
-    char tmp[64];
+    char tmp[64], qual[64];
     int j = 0;
     t_constant *c;
     char first;
@@ -114,7 +120,8 @@ static t_constant *single_symbol_ref(const char *s) {
         s++;
     }
     tmp[j] = 0;
-    c = find_const(tmp);
+    qualify_label(tmp, qual);
+    c = find_const(qual);
     if(c == NULL) return NULL;
     if(CONST_TYPE(c) != CONST_LABEL && CONST_TYPE(c) != CONST_DATA
         && CONST_TYPE(c) != CONST_BSS && CONST_TYPE(c) != CONST_IMPORT) {
@@ -138,8 +145,10 @@ static int is_seg_of_form(const char *expr) {
  * SEG (RDF only). */
 static t_constant *seg_of_symbol(const char *expr) {
     t_constant *c;
+    char qual[64];
     if(!is_seg_of_form(expr)) return NULL;
-    c = find_const(expr + 3);
+    qualify_label(expr + 3, qual);
+    c = find_const(qual);
     if(c == NULL) return NULL;
     if(CONST_TYPE(c) != CONST_LABEL && CONST_TYPE(c) != CONST_DATA
         && CONST_TYPE(c) != CONST_BSS && CONST_TYPE(c) != CONST_IMPORT) {
@@ -200,7 +209,7 @@ static void emit_word_with_reloc(const char *expr) {
     emit_word_val(get_const(expr));
 }
 
-static void emit_long_with_reloc(long int v, const char *expr) {
+static void emit_long_with_reloc(int32_t v, const char *expr) {
     if(expr != NULL) {
         reloc_if_symbol(expr, cur_offset(), 4);
     }
@@ -303,7 +312,6 @@ static void do_rm_op(int addr_param, int reg_param, int reg_literal,
 inline void do_instruction(t_instruction *cinstr) {
     int j = 0;
     int op1, op2, pt2;
-    long z;
 
     while(cinstr->op[j] != 0) {
         op1 = cinstr->op[j + 1];
@@ -368,6 +376,7 @@ inline void do_instruction(t_instruction *cinstr) {
             break;
         case OP_CMD_REL8: {
             t_constant *sc = single_symbol_ref(param[op1]);
+            int32_t target, here, disp;
             if(sc != NULL && CONST_TYPE(sc) == CONST_IMPORT) {
                 if(pass) {
                     out_msg("8-bit relative reference to import is out of range", 0);
@@ -375,26 +384,34 @@ inline void do_instruction(t_instruction *cinstr) {
                 outprog[outptr++] = 0;
                 break;
             }
-            z = get_const(param[op1]) - (outptr + 1);
-            if(labs(z) > 127 && pass) {
+            /* Promote both sides to int32_t before subtraction so 16-bit
+             * hosts don't truncate offsets >= 0x8000 into negatives. */
+            target = get_const(param[op1]);
+            here = (int32_t)outptr + 1;
+            disp = target - here;
+            if((disp < -128 || disp > 127) && pass) {
                 out_msg("Too long jump", 1);
             }
-            outprog[outptr++] = z & 0xff;
+            outprog[outptr++] = (byte)(disp & 0xff);
             break;
         }
         case OP_CMD_REL16: {
             t_constant *sc = single_symbol_ref(param[op1]);
+            int32_t target, here, disp;
             if(sc != NULL && CONST_TYPE(sc) == CONST_IMPORT) {
                 /* Spec §3.3: store negative addend -(patch_ofs + width).
                  * patch_ofs here is the disp word's offset (current outptr).
                  * Linker adds the target address; result is the rel16 displacement. */
                 dword patch_ofs = outptr;
-                long addend = -(long)(patch_ofs + 2);
+                int32_t addend = -(int32_t)(patch_ofs + 2);
                 add_reloc((byte)cur_section, patch_ofs, 2, rseg_for_symbol(sc), 1);
-                out_word((int)addend);
+                out_word(addend);
                 break;
             }
-            out_word(get_const(param[op1])-(outptr + 2));
+            target = get_const(param[op1]);
+            here = (int32_t)outptr + 2;
+            disp = target - here;
+            out_word(disp);
             break;
         }
         case OP_CMD_FAR_PTR: {
@@ -437,25 +454,31 @@ inline void do_instruction(t_instruction *cinstr) {
 }
 
 int assemble(char* fname) {
-    FILE *infile;
     char *line, *a1, *p;
     t_line *cur;
     char cf, stop, found;
     int l, prescan;
     t_constant *org_const, *ofs_const, *c;
-    long int lvalue;
+    int32_t lvalue;
     int lex1, lex2;
     t_instruction *cinstr;
+    char *saved_inputname_top;
 
-    if((infile = fopen(fname,"rb")) == NULL) {
-        out_msg("Can't open input file", 0);
+    if(!pp_open_source(fname)) {
         return 0;
     }
+
+    /* %include may mutate the global `inputname` so diagnostics point
+     * at the right file. Save the caller's value here so we can put
+     * it back on return (so the next pass sees the original). */
+    saved_inputname_top = inputname;
 
     a1 = line = NULL;
     linenr = 0;
     stop = 0;
     next_import_id = 3;
+    last_global[0] = 0;
+    pp_reset_pass();
 
     ofs_const = find_const("$");
     org_const = find_const("$$");
@@ -466,9 +489,180 @@ int assemble(char* fname) {
     param[0] = cur->p1;
     param[1] = cur->p2;
 
-    while(fgets(line, 4095, infile) && (!stop)) {
+    while(pp_next_line(line, 4095) && (!stop)) {
         linenr++;
         strip_line(line);
+
+        /* %define / %undef / %macro directives handled before split_line. */
+        if(line[0] == '%') {
+            if(!memcmp(line, "%MACRO ", 7)) {
+                /* %MACRO NAME N — slurp body until %ENDMACRO. Only on
+                 * pass 0; pass 1 re-encounters the directive but the
+                 * already-registered macro skips slurp (we still need to
+                 * consume the body lines to keep linenr correct). */
+                char *q = line + 7;
+                char name[64];
+                int n = 0, argc = 0;
+                while(*q == ' ') q++;
+                while(*q && *q != ' ' && n < (int)sizeof(name) - 1) {
+                    name[n++] = *q++;
+                }
+                name[n] = 0;
+                while(*q == ' ') q++;
+                if(*q >= '0' && *q <= '9') {
+                    argc = *q - '0';
+                    q++;
+                    while(*q >= '0' && *q <= '9') {
+                        argc = argc * 10 + (*q - '0');
+                        q++;
+                    }
+                }
+                if(argc > 9) {
+                    out_msg("%macro argc must be 0..9", 0);
+                    argc = 0;
+                }
+                if(!pass) {
+                    pp_macro_slurp(line, 4095, name, argc);
+                } else {
+                    /* Consume body without re-registering. */
+                    pp_skip_macro_body(line, 4095);
+                }
+                continue;
+            }
+            if(!memcmp(line, "%ENDMACRO", 9)) {
+                out_msg("%endmacro without %macro", 0);
+                continue;
+            }
+            if(!memcmp(line, "%INCLUDE ", 9)) {
+                /* %include "path"  or  %include path
+                 * Optional double-quoted form; otherwise the token runs
+                 * to end of line (whitespace stripped already). */
+                char *q = line + 9;
+                char path[256];
+                int n = 0;
+                while(*q == ' ') q++;
+                if(*q == '"') {
+                    q++;
+                    while(*q && *q != '"' && n < (int)sizeof(path) - 1) {
+                        path[n++] = *q++;
+                    }
+                } else {
+                    while(*q && *q != ' ' && n < (int)sizeof(path) - 1) {
+                        path[n++] = *q++;
+                    }
+                }
+                path[n] = 0;
+                if(n == 0) {
+                    out_msg("%include: expected file path", 0);
+                } else {
+                    pp_include(path);
+                }
+                continue;
+            }
+            if(!memcmp(line, "%DEFINE ", 8)) {
+                char *q = line + 8;
+                char name[64];
+                int n = 0;
+                while(*q == ' ') q++;
+                while(*q && *q != ' ' && n < (int)sizeof(name) - 1) {
+                    name[n++] = *q++;
+                }
+                name[n] = 0;
+                while(*q == ' ') q++;
+                if(n == 0 || !*q) {
+                    out_msg("%define: expected NAME body", 0);
+                } else if(!pass) {
+                    /* Allocate the body and hang it off the constant
+                     * entry's extra pointer. No fixed cap; bodies live
+                     * until expr_done() or %undef of this name. */
+                    char *body = (char *)MSA_MALLOC(strlen(q) + 1);
+                    t_constant *c;
+                    strcpy(body, q);
+                    c = add_const(name, CONST_DEFINE_TEXT, 0);
+                    c->extra = body;
+                }
+                continue;
+            }
+            if(!memcmp(line, "%UNDEF ", 7)) {
+                char *q = line + 7;
+                char name[64];
+                int n = 0;
+                while(*q == ' ') q++;
+                while(*q && *q != ' ' && n < (int)sizeof(name) - 1) {
+                    name[n++] = *q++;
+                }
+                name[n] = 0;
+                if(n) remove_const(name);
+                continue;
+            }
+            out_msg_str("Unknown directive '%s'", 0, line);
+            continue;
+        }
+
+        /* Macro invocation detection: peek the first identifier token
+         * on the line (skipping label: prefix), look it up. If it's a
+         * CONST_MACRO, parse args and expand. */
+        {
+            char *p = line;
+            char *first;
+            t_constant *mc;
+            char cmd_tok[64];
+            int ci;
+            /* Skip leading spaces. */
+            while(*p == ' ') p++;
+            first = p;
+            /* Skip "LABEL:" prefix to get to the command position. */
+            {
+                char *q = p;
+                while(*q && *q != ' ' && *q != ':') q++;
+                if(*q == ':') {
+                    p = q + 1;
+                    while(*p == ' ') p++;
+                    first = p;
+                }
+            }
+            ci = 0;
+            while(*p && *p != ' ' && ci < (int)sizeof(cmd_tok) - 1) {
+                cmd_tok[ci++] = *p++;
+            }
+            cmd_tok[ci] = 0;
+            if(ci > 0 && (mc = find_const(cmd_tok)) != NULL
+                      && CONST_TYPE(mc) == CONST_MACRO) {
+                /* Capture leading label if any, then expand. */
+                char prefix[80];
+                char *argstr;
+                int plen = 0;
+                if(first != line) {
+                    /* There was a label: copy "LABEL:" verbatim into prefix
+                     * so it lands as its own line, processed normally. */
+                    char *q = line;
+                    while(*q == ' ') q++;
+                    while(*q && *q != ':') {
+                        if(plen < (int)sizeof(prefix) - 2) prefix[plen++] = *q;
+                        q++;
+                    }
+                    if(*q == ':' && plen < (int)sizeof(prefix) - 2) {
+                        prefix[plen++] = ':';
+                    }
+                    prefix[plen] = 0;
+                }
+                while(*p == ' ') p++;
+                argstr = (*p) ? p : NULL;
+                /* Push a synthesized "LABEL:" line first so it's processed
+                 * after the macro body (LIFO). Actually: process label
+                 * BEFORE macro body, so push macro body first then label.
+                 * But the expansion stack pops in LIFO order — to get
+                 * label-then-body, we need to push body first, then label
+                 * on top so it pops first. Hmm — pp_macro_invoke pushes body
+                 * lines in reverse (so they pop in source order). After
+                 * that returns, push label on top so it pops first. */
+                pp_macro_invoke((t_macrobody *)mc->extra, cmd_tok, argstr);
+                if(plen > 0) {
+                    pp_push_line(prefix);
+                }
+                continue;
+            }
+        }
 
         /* Reset only the scalar fields and the first byte of each
          * string buffer; sizeof(t_line) is ~8KB and clearing it on
@@ -487,15 +681,24 @@ int assemble(char* fname) {
 
         split_line(cur, line, a1);
 
-        ofs_const->value = (int)cur_offset();
+        ofs_const->value = (int32_t)cur_offset();
 
         if(cur->has_label) {
             int ct = CONST_LABEL;
+            char qual[64];
             if(cur_section == SECTION_DATA) ct = CONST_DATA;
             else if(cur_section == SECTION_BSS) ct = CONST_BSS;
+            qualify_label(cur->label, qual);
             {
-                t_constant *lc = add_const(cur->label, ct, (int)cur_offset());
+                t_constant *lc = add_const(qual, ct, (int32_t)cur_offset());
                 lc->section = (char)cur_section;
+            }
+            /* Track most-recent non-local label as the parent scope for
+             * subsequent '.name' references. EQU labels also count, since
+             * NASM uses them as scope anchors too. */
+            if(cur->label[0] != '.') {
+                strncpy(last_global, cur->label, sizeof(last_global) - 1);
+                last_global[sizeof(last_global) - 1] = 0;
             }
         }
 
@@ -529,7 +732,7 @@ int assemble(char* fname) {
                     {
                         t_constant *sc = single_symbol_ref(a1);
                         if(sc != NULL) {
-                            emit_long_with_reloc((long)get_const(a1), a1);
+                            emit_long_with_reloc(get_const(a1), a1);
                         } else {
                             char *tail = get_dword(a1, &lvalue);
                             (void)tail;
@@ -546,7 +749,7 @@ int assemble(char* fname) {
             if(l != 0) {
                 t_constant *sc = single_symbol_ref(a1);
                 if(sc != NULL) {
-                    emit_long_with_reloc((long)get_const(a1), a1);
+                    emit_long_with_reloc(get_const(a1), a1);
                 } else {
                     char *tail = get_dword(a1, &lvalue);
                     (void)tail;
@@ -632,9 +835,16 @@ int assemble(char* fname) {
             } else {
                 out_msg_str("Unknown section '%s'", 0, sn);
             }
+            /* Reset local-label parent on section switch: a .loop in
+             * .text shouldn't see a .data label as its parent. */
+            last_global[0] = 0;
             break;
         }
         case LEX_EXPORT:
+            if(cur->p1[0] == '.') {
+                out_msg("Cannot export local label", 0);
+                break;
+            }
             if((c = find_const(cur->p1)) != NULL) {
                 c->is_export = 1;
             }
@@ -656,6 +866,10 @@ int assemble(char* fname) {
                 name[n] = 0;
                 if(*q == ',') q++;
                 if(n == 0) continue;
+                if(name[0] == '.') {
+                    out_msg("Cannot import local label", 0);
+                    continue;
+                }
                 c = find_const(name);
                 if(c != NULL) {
                     if(CONST_TYPE(c) == CONST_IMPORT) {
@@ -666,7 +880,7 @@ int assemble(char* fname) {
                         }
                     }
                 } else {
-                    c = add_const(name, CONST_IMPORT, (int)next_import_id);
+                    c = add_const(name, CONST_IMPORT, (int32_t)next_import_id);
                     next_import_id++;
                 }
             }
@@ -687,9 +901,16 @@ int assemble(char* fname) {
             }
             stop = 1;
             break;
-        case LEX_EQU:
-            add_const(cur->label, CONST_EXPR, get_const(cur->p1));
+        case LEX_EQU: {
+            char qual[64];
+            qualify_label(cur->label, qual);
+            add_const(qual, CONST_EXPR, get_const(cur->p1));
+            if(cur->label[0] != '.') {
+                strncpy(last_global, cur->label, sizeof(last_global) - 1);
+                last_global[sizeof(last_global) - 1] = 0;
+            }
             break;
+        }
         case LEX_NONE:
             out_msg("Syntax error", 0);
             stop = 1;
@@ -740,6 +961,16 @@ int assemble(char* fname) {
     }
     free(line);
     free(a1);
-    fclose(infile);
+    /* Close the source layer (outermost file + any include frames that
+     * survived an error mid-include). The next pass calls
+     * pp_open_source() again from the top. */
+    pp_close_source();
+    /* If %include replaced the global inputname with a malloced copy
+     * that was never popped (we exited from inside an include), free
+     * it and restore the caller's pointer. */
+    if(inputname != saved_inputname_top) {
+        free(inputname);
+        inputname = saved_inputname_top;
+    }
     return 1;
 }

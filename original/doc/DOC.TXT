@@ -1,6 +1,6 @@
 
 
-                MSA2 1.0 (BUILD 16)
+                MSA2 1.0 (BUILD 19)
                 -=-=-=-=-=-=-=-=-=-
         Copyright(C) 2000 - 2019 Robert Ostling (robost86@hotmail.com)
         Copyright(C) 2019 DosWord (dosworld@tutanota.com)
@@ -323,6 +323,568 @@ my_dd:  DD      0x23a36b14,0x552814,0x5ba4382,0x1000000,4,51,6
 
         Register operands (e.g. JMP FAR AX) have no 8086 encoding
         and are rejected at parse time.
+
+
+        Local labels (NASM dot-prefix)
+        ==============================
+
+        Labels beginning with '.' are local to the most recent
+        non-local label (the "parent"). The assembler internally
+        rewrites a local '.name' to '<PARENT>.name', so each parent
+        can have its own .loop, .done, etc., without colliding.
+
+                proc1:
+                        mov cx, 10
+                .loop:  loop .loop      ; internally PROC1.LOOP
+                        ret
+
+                proc2:
+                        mov cx, 5
+                .loop:  loop .loop      ; internally PROC2.LOOP
+                        ret
+
+        The parent scope is reset on each SECTION switch and at the
+        start of each pass. A local label used before any non-local
+        parent emits "Local label '.X' has no parent". EXPORT and
+        IMPORT of a local label are rejected.
+
+
+        Preprocessor: overview
+        ======================
+
+        MSA2 has two preprocessor mechanisms, both NASM-inspired but
+        intentionally simplified:
+
+                %define NAME body                single-line alias
+                %undef  NAME                     remove an alias
+                %macro  NAME N <body> %endmacro  parameterised block
+                %include "path"                  inline another file
+
+        Both are case-insensitive (the strip pass uppercases the whole
+        source line outside string/char literals), so the names are
+        normalised internally:
+
+                %define foo 1                    -> defines FOO
+                %define FOO 1                    -> same name
+
+        Directives are recognised only at the start of a line, with
+        any amount of leading whitespace. A directive line cannot
+        share its source line with a label or another statement.
+
+        Source files are read line-by-line. Directives are processed
+        as the line is read, before tokenising. Macro invocations are
+        detected before split_line and produce expanded lines that
+        are processed exactly as if the user had written them.
+
+
+        %define
+        =======
+
+        Form
+        ----
+
+                %define NAME body
+
+        NAME is an identifier (letters, digits, '_', '$', '.', '@'),
+        case-insensitive. The first non-space character after NAME
+        starts the body; the body runs to end of line. Comments (';')
+        are stripped from the body during the strip pass before
+        capture.
+
+                %define VIDSEG 0xB800           ; body = "0XB800"
+                %define MIN(a,b) ((a)+(b))      ; body = "((A)+(B))" -- NOT a macro
+
+        Comments are stripped during the strip pass *before* the body
+        is captured, so a comment-only body collapses to empty and is
+        rejected:
+
+                %define EOL ;trailing            ; ERROR: expected
+                                                 ; NAME body
+                %define K 5 ;ok comment          ; OK -- body = "5"
+
+        Storage and lifetime
+        --------------------
+
+        Each %define entry is a normal symbol-table row of type
+        CONST_DEFINE_TEXT; the body string hangs off its 'extra'
+        pointer. There is no fixed cap -- bodies are linked through
+        the symbol table and through the body allocation, so the
+        limit is available heap. Bodies are registered on pass 0 and
+        re-used on pass 1; they survive across passes.
+
+        Re-defining a name without %undef silently replaces the prior
+        body. The most recent %define wins; there is no warning.
+
+        Expansion
+        ---------
+
+        Expansion happens *only* in operand position. At any operand
+        position where get_const() resolves an identifier, if the
+        identifier names a CONST_DEFINE_TEXT entry, the body is
+        substituted and re-evaluated as a constant expression:
+
+                %define BASE  0x1000
+                %define OFS   BASE+0x10
+                        mov ax, OFS             ; -> mov ax, 0x1010
+                        mov bx, [OFS]           ; -> mov bx, [0x1010]
+                        db OFS, OFS+1           ; -> db 0x10, 0x11
+                                                ;   (low byte of 0x1010)
+
+        Chained %defines resolve naturally because get_const()
+        recurses each time it lands on a CONST_DEFINE_TEXT entry:
+
+                %define A B
+                %define B 7
+                        mov ax, A               ; -> mov ax, 7
+
+        Each level of indirection is one recursive call. A 64-level
+        recursion guard catches cyclic %defines and emits
+
+                "%define expansion of '<name>' too deep (cycle?)"
+
+        instead of letting the host C stack run out. So both
+        "%define A A" and longer cycles like A -> B -> A produce
+        a clean diagnostic rather than a crash.
+
+        The body is captured as text; macro-style argument
+        substitution does NOT happen for %define. So a body like
+        '((A)+(B))' is stored literally, and 'A' / 'B' inside it
+        resolve as whatever the symbol table currently holds at use
+        time -- there is no positional binding.
+
+        What %define does NOT do
+        ------------------------
+
+        * No parameters. %define MIN(a,b) ... stores literal
+          parameters in the body and does not pattern-match
+          arguments. Use %macro for parameterised bodies.
+
+        * No first-token-of-line expansion. A bare line consisting
+          only of a %define name is not expanded as a command:
+
+                %define CLI_HLT cli             ; not useful: the
+                                                ; "cli" body cannot
+                                                ; appear as a command
+                                                ; via %define.
+                                                ; Use %macro for
+                                                ; instruction-style
+                                                ; aliases.
+
+        * No string-pasting, no token concatenation, no conditional
+          expansion. The body is captured as text and substituted
+          as text.
+
+        %undef
+        ------
+
+                %undef NAME
+
+        Removes the named entry from the symbol table. After %undef,
+        subsequent use of NAME emits "Undefined constant '%s'" (a
+        warning, severity 1). Removing a name that was never defined
+        is silent.
+
+        %undef removes whatever entry currently exists under that
+        name -- not just %define entries. Using it to undef a label,
+        EQU, or import is permitted but generally a mistake; it does
+        not check the kind.
+
+        Interaction with EQU
+        --------------------
+
+        For numeric values, %define and EQU are interchangeable from
+        the user's perspective:
+
+                %define K 42
+                K2      EQU 42
+
+        Both make 'mov ax, K' and 'mov ax, K2' emit the same bytes.
+        Two practical differences:
+
+        * EQU evaluates the expression once at definition time and
+          stores the integer (CONST_EXPR). %define stores the body
+          text and re-evaluates per use (CONST_DEFINE_TEXT). For
+          expressions involving symbols defined later in the file,
+          %define is more forgiving across passes.
+
+        * EQU requires a label syntax ('NAME EQU value'). %define
+          uses directive syntax ('%define NAME value').
+
+        Interaction with EXPORT / IMPORT
+        --------------------------------
+
+        EXPORT and IMPORT operate on the symbol table by name. A
+        %define entry IS a symbol-table entry, so EXPORT %define-name
+        is parsed without error, but RDF only emits records for
+        CONST_LABEL / CONST_DATA / CONST_BSS / CONST_IMPORT entries;
+        a CONST_DEFINE_TEXT export is silently ignored at write
+        time. Document and avoid.
+
+        Interaction with sections
+        -------------------------
+
+        %define is section-agnostic. The name is global to the file;
+        it can be defined in any section and used in any section.
+
+
+        %macro / %endmacro
+        ==================
+
+        Form
+        ----
+
+                %macro NAME N
+                <body lines>
+                %endmacro
+
+        NAME is an identifier (case-insensitive). N is the argument
+        count, an integer 0..9. The body runs until %endmacro on its
+        own line. Body lines are captured verbatim (after the strip
+        pass: uppercased, comments stripped, whitespace collapsed).
+
+                %macro PUSHALL 0
+                        push ax
+                        push bx
+                        push cx
+                        push dx
+                %endmacro
+
+                %macro PROLOGUE 1
+                        push bp
+                        mov bp, sp
+                        sub sp, %1              ; %1 = local-frame size
+                %endmacro
+
+                %macro DELAY 1
+                        mov cx, %1
+                %%w:    loop %%w                ; %%w = per-call label
+                %endmacro
+
+        Storage and lifetime
+        --------------------
+
+        Each %macro entry is a normal symbol-table row of type
+        CONST_MACRO; its 'extra' pointer holds a t_macrobody, which
+        in turn carries a linked list of body lines. Bodies persist
+        across passes; the %macro directive is re-encountered on
+        pass 1 but the body is consumed-without-re-registering (the
+        existing entry is reused).
+
+        There are no fixed compile-time caps on macro count, body
+        line count, expansion-stack depth, or nesting level -- all
+        of these use linked lists. The only hard limits are 9
+        positional args (the %1..%9 syntax) and the per-expanded-line
+        buffer size (4096 bytes after substitution).
+
+        A runaway recursive macro will keep allocating expansion
+        frames until malloc fails; there is no automatic
+        recursion-depth guard.
+
+        Argument substitution
+        ---------------------
+
+        %1 through %9 in body lines are replaced at each invocation
+        with the corresponding argument's textual contents. Arguments
+        are split on commas at the call site:
+
+                DELAY 100                       ; %1 = "100"
+                PROLOGUE 8                      ; %1 = "8"
+
+        No quoting / no escaping: the argument runs from the
+        post-NAME space (or comma) up to the next comma or end of
+        line. Leading spaces are trimmed; trailing spaces are not.
+
+        Argument count is checked exactly: invoking a 1-arg macro
+        with 0 or 2 args emits "Macro arg count mismatch
+        (expected N)".
+
+        %% labels (per-invocation uniqueness)
+        ------------------------------------
+
+        A token of the form %%NAME in a macro body is rewritten at
+        each invocation to a synthetic identifier "@@<id>.NAME"
+        where <id> is a monotonic counter. So:
+
+                %macro LOOP_N 1
+                        mov cx, %1
+                %%w:    loop %%w
+                %endmacro
+
+                        LOOP_N 5                ; first call
+                        LOOP_N 10               ; second call
+
+        ...produces two distinct labels @@1.W and @@2.W, each loop
+        resolving to its own. Without the %% mechanism, both calls
+        would emit a label called 'W', which would collide on the
+        second call ("Constant W changed").
+
+        The @@<id> prefix is also installed as the *parent scope* for
+        local labels inside the expansion. So a body line like
+
+                %%entry:
+                        cmp ax, 0
+                        je .skip                ; .skip is local to
+                                                ; @@<id>.entry
+                .skip:  ret
+
+        works: the .skip reference resolves to @@<id>.entry.skip,
+        unique per invocation.
+
+        When the expansion ends, the previous "last non-local label"
+        scope is restored.
+
+        Macro invocation
+        ----------------
+
+        At the start of each source line (after strip but before
+        split_line), the assembler peeks the first identifier token.
+        If it looks like LABEL:NAME or NAME, and NAME is a
+        CONST_MACRO, the macro is invoked.
+
+                PUSHALL                         ; invocation, no args
+                DELAY 100                       ; invocation, 1 arg
+                start: PUSHALL                  ; label 'start' kept,
+                                                ; PUSHALL invoked
+
+        Body lines are substituted, %% tokens rewritten, and the
+        resulting lines are pushed onto an internal expansion stack.
+        Subsequent read-loop iterations consume the stack first
+        before falling through to the source file. Order is
+        preserved: the body's first line runs first, then the
+        second, etc.
+
+        A leading "LABEL:" on the invocation line is processed as
+        a separate label-only line emitted just before the body, so
+        the label binds to the start of the expanded body.
+
+        Body lines may contain anything a normal source line can,
+        with two exceptions:
+
+        * %macro inside a body is rejected
+          ("Nested %macro is not supported"). Macro definitions
+          must be at top level.
+
+        * %endmacro outside a %macro is rejected
+          ("%endmacro without %macro").
+
+        Recursive macro invocation -- a macro that invokes itself,
+        or invokes another macro that invokes back -- is permitted
+        as long as it terminates within the 64-level runaway-
+        recursion guard. The guard counts in-flight invocations and
+        emits
+
+                "Macro recursion of '<name>' too deep (cycle?)"
+
+        when a macro is invoked while 64 expansions are already on
+        the expansion stack. Without the guard, a self-invoking
+        macro (or A-invokes-B-invokes-A cycle) would push body
+        lines and save frames until the heap is exhausted. The
+        same 64-level threshold is used by the %define guard in
+        get_const(), for consistency.
+
+        Interaction with sections
+        -------------------------
+
+        A macro body can switch sections inside, and the section
+        state survives back to the caller -- there is no save/restore.
+        Be deliberate:
+
+                %macro DEFDATA 1
+                section .data
+                        dw %1
+                section .text
+                %endmacro
+
+        Always pair section switches so the macro leaves the caller
+        in the expected section, or document that the macro changes
+        section state.
+
+        The %%-label local-scope mechanism saves and restores
+        last_global, but the SECTION setting itself is not part of
+        that save.
+
+        Interaction with EXPORT / IMPORT
+        --------------------------------
+
+        Same as %define: a CONST_MACRO entry can be named by EXPORT
+        but the RDF writer ignores it. Macro names do not appear in
+        the object file.
+
+        Local labels generated by %% (@@<id>.NAME) are valid local
+        labels for the purposes of EXPORT/IMPORT rejection: trying
+        to export one would name the post-rewrite form, which the
+        EXPORT directive does not see anyway because the rewrite
+        happens during macro expansion, not at directive time.
+
+
+        %include
+        ========
+
+        Form
+        ----
+
+                %include "path"
+                %include path
+
+        Suspends reading of the current source file, opens `path`,
+        and resumes the current file once `path` reaches EOF. The
+        included file participates in assembly exactly as if its
+        contents were pasted in at the %include line: %defines and
+        %macros declared in the included file are visible in the
+        caller after the %include line; labels in the included file
+        share the caller's address space.
+
+        Quoted and unquoted forms are equivalent. Strip-pass quirks
+        apply -- the unquoted form runs to end of line, whitespace
+        collapsed, comments removed. The quoted form preserves
+        whatever was inside the quotes verbatim (case included).
+
+                %include "lib/macros.inc"       ; quoted
+                %include rdoff.inc              ; unquoted
+
+        Paths are resolved by the host fopen(); relative paths are
+        relative to the assembler's current working directory, not
+        to the including file. There is no include-search-path
+        directive yet; if you need one, pass the path explicitly.
+
+        Nesting
+        -------
+
+        Includes may nest up to 8 deep. The 9th level emits
+        "%include nested too deep (limit 8)" and aborts the include.
+        The cap mainly exists to catch accidental cycles (a file
+        that includes itself, directly or indirectly) -- normal
+        usage rarely needs more than 2-3 levels.
+
+        Each include level saves the parent's FILE*, line number,
+        and inputname so error messages always point at the file
+        the offending line actually lives in, not the parent:
+
+                outer.asm:
+                        %include "inner.asm"
+                inner.asm:
+                        mov ax, NOPE            ; line 1 of inner.asm
+                ---> WARN:inner.asm:1: Undefined constant 'NOPE'
+
+        Pop happens automatically at EOF of the included file --
+        you don't write a closing directive.
+
+        Error: file not found
+        ---------------------
+
+        A %include for a path that cannot be opened emits
+        "Cannot open included file '<path>'" and continues with
+        the next line of the parent file. The unread include is
+        skipped; symbols it would have declared are absent and
+        become "Undefined constant" warnings further down.
+
+        Restrictions
+        ------------
+
+        * A %macro body must lie entirely within one file. You
+          cannot start %macro in one file, %include another, and
+          have %endmacro live in the included file. The body
+          slurp reads raw lines from the current file only and
+          does not follow include boundaries.
+
+        * Section state (text/data/bss) is not saved on include
+          push. If the included file does `section .data` and
+          ends, the parent resumes in .data, not the section it
+          was in. Be deliberate, or restore explicitly at the end
+          of the included file.
+
+        * %include itself participates in the strip pass; the
+          uppercased keyword form `%INCLUDE` is required, but
+          since strip uppercases everything outside string
+          literals, you can write it in any case in the source.
+
+
+        Limits summary
+        --------------
+
+                9               positional args per macro
+                                 (the syntax is %1..%9)
+                8               nested %include depth
+                64              %define recursion (cycle guard)
+                64              %macro in-flight invocation depth
+                                 (recursion / cycle guard)
+                4096            bytes per expanded line (after %1..%9
+                                 substitution)
+                255             chars per %include path
+                63              chars per macro/%define name
+
+        Everything else -- macro count, %define count, body line
+        count, expansion-stack depth -- is bounded only by available
+        memory. The two recursion guards exist to stop runaway
+        self-invoking macros/defines before they exhaust the heap;
+        a 64-deep chain of *unrelated* %defines or *unrelated*
+        macros is fine (the guards count in-flight, not historical,
+        depth).
+
+
+        Troubleshooting
+        ===============
+
+        "Undefined constant 'X'"
+                X was never %defined, never EQU'd, never declared as
+                a label/import. Common cause: typo, or %undef before
+                use, or use before the %define line.
+
+        "Constant X changed"
+                Same name was defined twice with different values
+                across passes (or in the same pass for label types).
+                Common cause: a label re-declared, or an EQU after a
+                label of the same name.
+
+        "Macro arg count mismatch (expected N)"
+                Invocation arg count does not match the declared N.
+                Count commas: N args means N-1 commas.
+
+        "Nested %macro is not supported"
+                A %macro directive appeared inside another macro's
+                body. Pull the inner macro out to top level.
+
+        "Macro recursion of 'X' too deep (cycle?)"
+                X invoked itself either directly or via a chain
+                while 64 invocations were already in flight. Either
+                add a terminating condition, or refactor the body
+                to avoid the recursive call.
+
+        "%endmacro without %macro"
+                A bare %endmacro on a top-level line. Match it with
+                a %macro above.
+
+        "%define: expected NAME body"
+                %define line had no body, e.g. "%define FOO" with
+                nothing after. %define requires at least one
+                non-space character of body.
+
+        "%define expansion of 'X' too deep (cycle?)"
+                Body of X (directly or via a chain) references X
+                again. The recursion guard fires after 64 levels.
+                Fix the body or %undef X.
+
+        "Cannot open included file 'X'"
+                The %include path could not be opened. Check the
+                path (relative paths are relative to the assembler's
+                working directory, not the including file) and
+                file permissions.
+
+        "%include nested too deep (limit 8)"
+                The include stack exceeded 8 levels. Usually means
+                a cyclic include (file A includes B includes A).
+                If you legitimately need deeper nesting, raise
+                INCLUDE_MAX_DEPTH in MACRO.C.
+
+        "%include: expected file path"
+                The %include line had nothing after the directive
+                keyword. Provide a quoted or unquoted path.
+
+        "Unknown directive 'X'"
+                A line starting with '%' was not recognised as one
+                of %define / %undef / %macro / %endmacro /
+                %include. Check spelling; remember the strip pass
+                uppercases.
 
 
                 23:31 24 Nov 2019

@@ -36,6 +36,23 @@ SOFTWARE.
 #include "EXPR.H"
 #include "LEX.H"
 
+char last_global[64];
+
+void qualify_label(const char *raw, char *out) {
+    if(raw[0] != '.') {
+        strcpy(out, raw);
+        return;
+    }
+    if(last_global[0] == 0) {
+        if(pass) {
+            out_msg_str("Local label '%s' has no parent", 0, raw);
+        }
+        strcpy(out, raw);
+        return;
+    }
+    sprintf(out, "%s%s", last_global, raw);
+}
+
 int hashCode(const char *str) {
     int result = 0;
 
@@ -55,7 +72,7 @@ inline char is_az(char c) {
 }
 
 inline char is_ident(char c) {
-    return is_numeric(c) || is_az(c) || c == '_' || c == '$' || c == '.';
+    return is_numeric(c) || is_az(c) || c == '_' || c == '$' || c == '.' || c == '@';
 }
 
 inline char is_math(char c) {
@@ -185,7 +202,7 @@ char inline is_hex(char c) {
     return 0;
 }
 
-char *get_dword(char *s, long int *value) {
+char *get_dword(char *s, int32_t *value) {
     char c = s[1];
 
     *value = 0;
@@ -214,9 +231,9 @@ char *get_dword(char *s, long int *value) {
     return s;
 }
 
-int get_number(char* s) {
+int32_t get_number(char* s) {
     char c1, c2;
-    int value = 0;
+    int32_t value = 0;
 
     c1 = s[0];
     c2 = s[1];
@@ -244,10 +261,19 @@ int get_number(char* s) {
     return value;
 }
 
-int get_const(const char* s) {
+/* Recursion guard for %define expansion through get_const(). A body
+ * that names itself (`%define A A`) or chains into a cycle would
+ * recurse here until the host C stack is exhausted -- fatal on DOS
+ * where the stack is ~4 KB. Cap at 64 levels; the only legitimate
+ * use of depth > 1 is a chain of %defines resolving to a numeric
+ * expression, which never needs more than a handful of levels. */
+#define GET_CONST_MAX_DEPTH 64
+static int get_const_depth;
+
+int32_t get_const(const char* s) {
     int j;
-    char tmp[32], sign;
-    int value, x;
+    char tmp[64], qual[64], sign;
+    int32_t value, x;
     t_constant *c;
 
     value = 0;
@@ -265,7 +291,7 @@ int get_const(const char* s) {
             s++;
         } else {
             j = 0;
-            while(is_ident(*s)) {
+            while(is_ident(*s) && j < (int)sizeof(tmp) - 1) {
                 tmp[j] = *s;
                 j++;
                 s++;
@@ -275,11 +301,30 @@ int get_const(const char* s) {
             if(is_numeric(tmp[0])) {
                 x = get_number(tmp);
             } else {
-                if((c = find_const(tmp)) != NULL) {
-                    /* Imports have no value at assemble time; the linker
-                     * patches the real address. Reading them here yields
-                     * 0 so the patch site holds the standard addend. */
-                    x = CONST_TYPE(c) == CONST_IMPORT ? 0 : c->value;
+                qualify_label(tmp, qual);
+                if((c = find_const(qual)) != NULL) {
+                    if(CONST_TYPE(c) == CONST_DEFINE_TEXT) {
+                        const char *body = (const char *)c->extra;
+                        if(get_const_depth >= GET_CONST_MAX_DEPTH) {
+                            if(pass) {
+                                out_msg_str(
+                                    "%%define expansion of '%s' too deep "
+                                    "(cycle?)", 0, tmp);
+                            }
+                            x = 0;
+                        } else if(body) {
+                            get_const_depth++;
+                            x = get_const(body);
+                            get_const_depth--;
+                        } else {
+                            x = 0;
+                        }
+                    } else {
+                        /* Imports have no value at assemble time; the linker
+                         * patches the real address. Reading them here yields
+                         * 0 so the patch site holds the standard addend. */
+                        x = CONST_TYPE(c) == CONST_IMPORT ? 0 : c->value;
+                    }
                 } else {
                     if(pass) {
                         out_msg_str("Undefined constant '%s'", 1, tmp);

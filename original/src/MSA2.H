@@ -32,7 +32,7 @@ SOFTWARE.
 
 #define MAIN_VERSION    1
 #define SUB_VERSION     0
-#define BUILD           16
+#define BUILD           19
 #define PROG_NAME       "MSA2"
 
 #define MAX_LABEL 32
@@ -108,6 +108,8 @@ typedef uint32_t dword;
 #define CONST_BSS 3
 #define CONST_DATA 4
 #define CONST_IMPORT 5
+#define CONST_DEFINE_TEXT 6  /* %define body stored in define_bodies[value] */
+#define CONST_MACRO 7        /* %macro body stored in macro_bodies[value] */
 
 #define CONST_TYPE(x) ((x)->type & 0x7f)
 
@@ -115,7 +117,7 @@ typedef struct {
     byte    mod;
     byte    reg;
     byte    rm;
-    int     disp;
+    int32_t disp;
     byte    op_len;
     byte    op[0x06];
     const char *disp_src; /* original expression for disp, or NULL */
@@ -124,10 +126,11 @@ typedef struct {
 typedef struct {
     char name[64];
     char is_export;
-    int hash;
+    uint16_t hash;  /* 16-bit string hash; gate strcmp in find_const */
     char type;
     char section;   /* SECTION_TEXT / SECTION_DATA / SECTION_BSS, for CONST_LABEL/CONST_DATA/CONST_BSS */
-    int value;
+    int32_t value;
+    void *extra;    /* CONST_DEFINE_TEXT -> char *body; CONST_MACRO -> t_macrobody*; else NULL */
     void *next;
 } t_constant;
 
@@ -147,8 +150,8 @@ typedef struct {
     int lex2;
     char label[MAX_LABEL];
     char cmd[16];
-    char p1[4096];
-    char p2[4096];
+    char p1[512];
+    char p2[512];
 } t_line;
 
 /* RDF relocation record (in-memory; serialised by RDF.C). */
@@ -175,8 +178,18 @@ extern void build_address(t_address* a);
 
 extern int get_type(const char* s);
 extern int hashCode(const char *str);
-extern int get_number(char* s);
+extern int32_t get_number(char* s);
 extern int get_address(t_address* a, char* s);
+
+/* NASM-style local labels: if raw starts with '.', produce
+ * "<last_global><raw>"; else copy raw verbatim. `out` must hold at
+ * least 64 bytes (matches t_constant.name). Emits an error if raw is
+ * local but no non-local parent has been seen since the last reset. */
+extern void qualify_label(const char *raw, char *out);
+extern char last_global[64];
+
+/* %define body now lives directly on t_constant.extra (char *) for
+ * CONST_DEFINE_TEXT entries; no helper needed. */
 
 extern char err_msg[];
 extern int errors, warnings, pass, passes;
@@ -202,8 +215,8 @@ extern word code_size;
 extern void add_reloc(byte seg, dword ofs, byte width, word rseg, byte relative);
 extern void add_segreloc(byte seg, dword ofs, word rseg);
 
-extern int get_const(const char *s);
-extern char *get_dword(char *s, long int *x);
+extern int32_t get_const(const char *s);
+extern char *get_dword(char *s, int32_t *x);
 
 extern word entry_point;
 extern char entry_point_def;

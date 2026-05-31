@@ -50,12 +50,12 @@ void expr_done() {
     }
 }
 
-t_constant *add_const(const char* name, int type, int value) {
+t_constant *add_const(const char* name, int type, int32_t value) {
     t_constant *c;
-    int hash;
+    uint16_t hash;
 
     c = constants;
-    hash = hashCode(name);
+    hash = (uint16_t)hashCode(name);
 
     while(c != NULL) {
         if(hash == c->hash) {
@@ -81,16 +81,17 @@ t_constant *add_const(const char* name, int type, int value) {
     c->type = type;
     c->is_export = 0;
     c->section = SECTION_TEXT;
+    c->extra = NULL;
     c->next = constants;
     return constants = c;
 }
 
 t_constant *find_const(const char *name) {
     t_constant *c;
-    int hash;
+    uint16_t hash;
 
     c = constants;
-    hash = hashCode(name);
+    hash = (uint16_t)hashCode(name);
     while(c != NULL) {
         if(hash == c->hash) {
             if(!strcmp(c->name, name)) {
@@ -100,4 +101,34 @@ t_constant *find_const(const char *name) {
         c = (t_constant *)c->next;
     }
     return c;
+}
+
+int remove_const(const char *name) {
+    t_constant *c, *prev;
+    uint16_t hash;
+
+    prev = NULL;
+    c = constants;
+    hash = (uint16_t)hashCode(name);
+    while(c != NULL) {
+        if(hash == c->hash && !strcmp(c->name, name)) {
+            if(prev == NULL) constants = (t_constant *)c->next;
+            else prev->next = c->next;
+            /* CONST_DEFINE_TEXT and CONST_MACRO own heap payloads
+             * via c->extra; free them. Free of the inner storage is
+             * type-specific so we delegate to the owning module. */
+            if(CONST_TYPE(c) == CONST_DEFINE_TEXT) {
+                free(c->extra);
+            }
+            /* CONST_MACRO body is freed when the assembler's macro
+             * table is torn down at expr_done(); leaving it here
+             * untouched is fine since macros are typically
+             * file-lifetime. */
+            free(c);
+            return 1;
+        }
+        prev = c;
+        c = (t_constant *)c->next;
+    }
+    return 0;
 }

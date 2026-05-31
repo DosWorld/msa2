@@ -34,7 +34,8 @@ extern t_constant *constants;
 extern void expr_init();
 extern void expr_done();
 
-extern t_constant *add_const(const char* name, int type, int value);
+extern t_constant *add_const(const char* name, int type, int32_t value);
 extern t_constant *find_const(const char *name);
+extern int remove_const(const char *name);  /* returns 1 if removed, 0 if not found */
 
 #endif

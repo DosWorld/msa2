@@ -1,4 +1,116 @@
 
+        News in version 1.0.19:
+
+        * Preprocessor (%define/%macro/%include) extracted from
+          ASSEMBLR.C into a new MACRO.C / MACRO.H module. The
+          public surface is the pp_* family (pp_open_source,
+          pp_close_source, pp_reset_pass, pp_next_line, pp_include,
+          pp_macro_slurp, pp_skip_macro_body, pp_macro_invoke,
+          pp_push_line). t_macrobody / t_macroline now live in
+          MACRO.H. ASSEMBLR.C lost ~340 lines and no longer touches
+          current_file or the include / expansion stacks directly.
+          Makefiles updated to add MACRO.C to both the DOS Watcom
+          (wcl) and the POSIX (cc) builds.
+        * P1 (DOS stack safety): the 4 KB macro-substitution buffer
+          in pp_macro_invoke used to live on the C stack. On
+          Watcom DOS the default stack is ~4 KB, so a single macro
+          call burned the entire stack. The buffer is now a module-
+          static char[4096] in MACRO.C; pp_macro_invoke is not
+          re-entrant, so one buffer is sufficient and safe.
+        * P3 (cycle guard for %define recursion): a body that
+          named itself (`%define A A`) or chained into a cycle
+          (`%define A B` + `%define B A`) used to recurse through
+          get_const() until the host stack was exhausted. Added a
+          64-level recursion guard; on overflow get_const emits
+          "%define expansion of '<name>' too deep (cycle?)" and
+          returns 0. Tests test_asm_define_cycle_guard /
+          test_asm_define_mutual_cycle_guard cover both paths.
+        * Macro recursion guard. The same situation existed for
+          %macro: a macro that invoked itself (`%macro M 0 / M /
+          %endmacro` then `M`) would push body lines and save
+          frames indefinitely. pp_macro_invoke now counts in-flight
+          invocations via the macro_save_head linked list and
+          rejects the invocation when 64 are already active,
+          emitting "Macro recursion of '<name>' too deep (cycle?)".
+          pp_macro_invoke's signature gained a `name` parameter so
+          the diagnostic can point at the offending macro. Tests
+          test_asm_macro_recursion_guard /
+          test_asm_macro_mutual_recursion_guard cover direct and
+          indirect cycles.
+        * Removed the per-instruction-line caller code that
+          touched include_stack_head / current_file directly --
+          end-of-pass cleanup now goes through pp_close_source(),
+          and the pass-1 consume-macro-body loop became one call
+          to pp_skip_macro_body().
+
+        News in version 1.0.18:
+
+        * Added %include directive. %include "path" (or unquoted
+          %include path) suspends reading of the current file,
+          opens the named file, and resumes on EOF -- equivalent
+          to inlining the file's contents at the directive line.
+          Implementation: a linked-list stack of t_include_frame
+          entries saves the parent FILE*, line number, and
+          inputname at each push, restores on pop. There is no
+          fixed cap on the number of include frames per se, but a
+          reasonable depth limit (INCLUDE_MAX_DEPTH = 8) catches
+          cyclic includes.
+        * Diagnostics inside an included file now attribute the
+          file name and line to the included file, not the parent.
+          out_msg() prints inputname/linenr verbatim; %include
+          updates both on push and pop.
+        * Restrictions: %macro bodies must lie within one file
+          (the slurp loop reads raw fgets from the current file
+          and does not follow include boundaries). Section state
+          is not saved/restored across an include.
+
+        News in version 1.0.17:
+
+        * Local labels (NASM dot-prefix). A label starting with '.'
+          is qualified to <PARENT>.<name> using the most recent
+          non-local label as parent, so the same .loop / .done can
+          be reused in every procedure. Parent resets on SECTION
+          switch and at start of each pass. Locals cannot be
+          EXPORTed or IMPORTed.
+        * Macros: %define and %macro. %define is single-line text
+          substitution at operand position; bodies are re-evaluated
+          per use so expressions like 'BASE+0x10' work. %macro
+          supports 0..9 positional args (%1..%9), per-invocation
+          labels (%%name → @@id.name). Nested %macro is rejected.
+          All preprocessor storage uses linked lists: there is no
+          compile-time cap on macro count, %define count, body
+          line count, expansion-stack depth, or nesting depth -- the
+          only hard limit is available heap.
+        * t_constant gained an 'extra' pointer that holds the body
+          for CONST_DEFINE_TEXT entries (char *) and the t_macrobody
+          for CONST_MACRO entries. Removed the side-table arrays
+          define_bodies[256]/macro_bodies[256]/macro_stack[1024]/
+          macro_saved_global[32] and their hard caps.
+        * %undef removes a %define entry.
+        * Bug fix on 16-bit hosts: REL8/REL16 displacement math used
+          'int' (16-bit signed) on both sides, so target addresses
+          >= 0x8000 wrapped to negative and produced spurious
+          "Too long jump" errors. All offset/value math now uses
+          int32_t from <stdint.h>; get_const(), get_number(),
+          get_dword(), t_constant.value, t_address.disp, and the
+          emit_* helpers are int32_t.
+        * Bug fix on 16-bit hosts: add_const() value parameter was
+          'int' (16-bit signed), so label values >= 0x8000 narrowed
+          to negative through the parameter and sign-extended into
+          c->value (int32_t). Widened the param to int32_t and
+          dropped the (int)cur_offset() casts at all call sites.
+          Regression test test_asm_label_value_high_16bit asserts
+          a label at org=0x9000 round-trips with the high bit
+          preserved.
+        * Symbol-table find_const() now gates strcmp behind a
+          uint16_t hash compare; t_constant.hash narrowed to 16 bits.
+          Cheap prefilter (~1/65536 false positives) before the
+          string comparison. add_const, find_const, remove_const all
+          use the same hash type.
+        * New remove_const() helper in EXPR.C — needed by %undef and
+          useful as a primitive for any future macro/define
+          undefinition flow.
+
         News in version 1.0.16:
 
         * Added IMPORT directive (RDF target). Declares external

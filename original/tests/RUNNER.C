@@ -72,6 +72,32 @@ int test_asm_jmp_far_direct_rejected_for_non_rdf(void);
 int test_asm_jmp_far_indirect_mem(void);
 int test_asm_call_far_indirect_mem(void);
 int test_asm_jmp_far_reg_rejected(void);
+int test_asm_local_label_two_procs(void);
+int test_asm_local_label_no_parent(void);
+int test_asm_local_label_section_resets_parent(void);
+int test_asm_export_local_rejected(void);
+int test_asm_local_label_disp_reloc(void);
+int test_asm_define_numeric(void);
+int test_asm_define_expression(void);
+int test_asm_undef(void);
+int test_asm_define_cycle_guard(void);
+int test_asm_define_mutual_cycle_guard(void);
+int test_asm_rel_offset_no_overflow_16bit(void);
+int test_asm_label_value_high_16bit(void);
+int test_asm_macro_no_args(void);
+int test_asm_macro_one_arg(void);
+int test_asm_macro_local_label(void);
+int test_asm_macro_argc_mismatch(void);
+int test_asm_macro_nested_rejected(void);
+int test_asm_macro_recursion_guard(void);
+int test_asm_macro_mutual_recursion_guard(void);
+int test_asm_macro_no_arbitrary_caps(void);
+int test_asm_include_basic(void);
+int test_asm_include_unquoted(void);
+int test_asm_include_nested(void);
+int test_asm_include_missing_file(void);
+int test_asm_include_too_deep(void);
+int test_asm_include_error_attribution(void);
 
 typedef int (*test_fn)(void);
 
@@ -135,6 +161,32 @@ static struct test_entry all_tests[] = {
     { "asm_jmp_far_indirect_mem",   test_asm_jmp_far_indirect_mem },
     { "asm_call_far_indirect_mem",  test_asm_call_far_indirect_mem },
     { "asm_jmp_far_reg_rejected",   test_asm_jmp_far_reg_rejected },
+    { "asm_local_label_two_procs",  test_asm_local_label_two_procs },
+    { "asm_local_label_no_parent",  test_asm_local_label_no_parent },
+    { "asm_local_label_section_resets_parent", test_asm_local_label_section_resets_parent },
+    { "asm_export_local_rejected",  test_asm_export_local_rejected },
+    { "asm_local_label_disp_reloc", test_asm_local_label_disp_reloc },
+    { "asm_define_numeric",         test_asm_define_numeric },
+    { "asm_define_expression",      test_asm_define_expression },
+    { "asm_undef",                  test_asm_undef },
+    { "asm_define_cycle_guard",     test_asm_define_cycle_guard },
+    { "asm_define_mutual_cycle_guard", test_asm_define_mutual_cycle_guard },
+    { "asm_rel_offset_no_overflow_16bit", test_asm_rel_offset_no_overflow_16bit },
+    { "asm_label_value_high_16bit", test_asm_label_value_high_16bit },
+    { "asm_macro_no_args",          test_asm_macro_no_args },
+    { "asm_macro_one_arg",          test_asm_macro_one_arg },
+    { "asm_macro_local_label",      test_asm_macro_local_label },
+    { "asm_macro_argc_mismatch",    test_asm_macro_argc_mismatch },
+    { "asm_macro_nested_rejected",  test_asm_macro_nested_rejected },
+    { "asm_macro_recursion_guard",  test_asm_macro_recursion_guard },
+    { "asm_macro_mutual_recursion_guard", test_asm_macro_mutual_recursion_guard },
+    { "asm_macro_no_arbitrary_caps", test_asm_macro_no_arbitrary_caps },
+    { "asm_include_basic",          test_asm_include_basic },
+    { "asm_include_unquoted",       test_asm_include_unquoted },
+    { "asm_include_nested",         test_asm_include_nested },
+    { "asm_include_missing_file",   test_asm_include_missing_file },
+    { "asm_include_too_deep",       test_asm_include_too_deep },
+    { "asm_include_error_attribution", test_asm_include_error_attribution },
 
     { NULL, NULL }
 };

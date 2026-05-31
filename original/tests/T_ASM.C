@@ -869,6 +869,835 @@ int test_asm_call_far_indirect_mem(void) {
     return 0;
 }
 
+int test_asm_local_label_two_procs(void) {
+    /* Each proc has its own .loop; both should resolve to its own
+     * qualified form (PROC1.LOOP / PROC2.LOOP). No collision.
+     *
+     *   0: proc1: mov cx, 1
+     *   3: .loop: loop .loop      -> e2 fe       (-2 to .loop at 3)
+     *   5:        ret
+     *   6: proc2: mov cx, 2
+     *   9: .loop: loop .loop      -> e2 fe       (-2 to .loop at 9)
+     *  11:        ret
+     */
+    extern byte *outprog;
+    extern word outptr;
+    static const unsigned char expected[] = {
+        0xB9, 0x01, 0x00,
+        0xE2, 0xFE,
+        0xC3,
+        0xB9, 0x02, 0x00,
+        0xE2, 0xFE,
+        0xC3
+    };
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "proc1:\n"
+        "    mov cx, 1\n"
+        ".loop:\n"
+        "    loop .loop\n"
+        "    ret\n"
+        "proc2:\n"
+        "    mov cx, 2\n"
+        ".loop:\n"
+        "    loop .loop\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(sizeof(expected), outptr);
+    TEST_ASSERT_MEM_EQ(expected, outprog, sizeof(expected));
+
+    /* Both qualified forms exist and have distinct offsets. */
+    {
+        t_constant *l1 = find_const("PROC1.LOOP");
+        t_constant *l2 = find_const("PROC2.LOOP");
+        TEST_ASSERT(l1 != NULL);
+        TEST_ASSERT(l2 != NULL);
+        TEST_ASSERT_EQ_INT(3, l1->value);
+        TEST_ASSERT_EQ_INT(9, l2->value);
+    }
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_local_label_no_parent(void) {
+    /* A '.local:' before any non-local label has no parent. The
+     * assembler must emit a diagnostic on pass 1 (the message is gated
+     * on pass to avoid double-printing during the symbol-collect pass). */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        ".foo:\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_local_label_section_resets_parent(void) {
+    /* SECTION switch resets last_global. A '.x' in .data after
+     * 'msg:' in .text must NOT bind to 'msg' as its parent. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_RDF);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "msg:\n"
+        "    ret\n"
+        "section .data\n"
+        ".x:\n"
+        "    db 0\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_export_local_rejected(void) {
+    /* EXPORT of a name starting with '.' has no defined meaning
+     * (locals are scoped to a parent). Must error. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_RDF);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "proc:\n"
+        ".inner:\n"
+        "    ret\n"
+        "EXPORT .inner\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_local_label_disp_reloc(void) {
+    /* mov ax, [.tbl] where .tbl is a .data local: the disp word
+     * gets a RELOC targeting .data with the qualified label resolved. */
+    extern byte *outprog;
+    extern word outptr;
+    extern t_reloc *relocs;
+    t_reloc *r;
+    int count = 0;
+
+    reset_asm_state(TARGET_RDF);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "proc:\n"
+        "    mov ax, [.tbl]\n"
+        "    ret\n"
+        "section .data\n"
+        "proc:\n"
+        ".tbl:\n"
+        "    dw 0\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(0x8b, outprog[0]);
+    TEST_ASSERT_EQ_INT(0x06, outprog[1]);   /* mod=00 reg=AX rm=110 */
+
+    for(r = relocs; r != NULL; r = r->next) count++;
+    TEST_ASSERT_EQ_INT(1, count);
+    TEST_ASSERT_EQ_INT(SECTION_TEXT, relocs->seg);
+    TEST_ASSERT_EQ_INT(2, relocs->ofs);
+    TEST_ASSERT_EQ_INT(1, relocs->rseg);    /* .data */
+
+    /* The qualified form lives in the symbol table; the raw '.tbl' does not. */
+    TEST_ASSERT(find_const("PROC.TBL") != NULL);
+    TEST_ASSERT(find_const(".TBL") == NULL);
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_define_numeric(void) {
+    /* %define NAME numeric-expr  -> usable as a constant in operands. */
+    extern byte *outprog;
+    extern word outptr;
+    static const unsigned char expected[] = { 0xB8, 0x00, 0xB8, 0xC3 };
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%define VIDSEG 0xB800\n"
+        "    mov ax, VIDSEG\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(sizeof(expected), outptr);
+    TEST_ASSERT_MEM_EQ(expected, outprog, sizeof(expected));
+    return 0;
+}
+
+int test_asm_define_expression(void) {
+    /* %define body is re-evaluated at each use, so a forward reference
+     * to another %define works as long as it resolves at lookup time. */
+    extern byte *outprog;
+    extern word outptr;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%define BASE 0x1000\n"
+        "%define OFS  BASE+0x10\n"
+        "    mov ax, OFS\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(4, outptr);
+    TEST_ASSERT_EQ_INT(0xB8, outprog[0]);
+    TEST_ASSERT_EQ_INT(0x10, outprog[1]);
+    TEST_ASSERT_EQ_INT(0x10, outprog[2]);
+    TEST_ASSERT_EQ_INT(0xC3, outprog[3]);
+    return 0;
+}
+
+int test_asm_undef(void) {
+    /* %undef removes the name; subsequent use produces an "Undefined
+     * constant" warning (severity 1, increments warnings not errors). */
+    extern int warnings;
+    extern byte quiet;
+    int saved_warnings;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%define VIDSEG 0xB800\n"
+        "%undef VIDSEG\n"
+        "    mov ax, VIDSEG\n"
+        "    ret\n"));
+    saved_warnings = warnings;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(warnings > saved_warnings);
+    quiet = saved_quiet;
+    return 0;
+}
+
+int test_asm_define_cycle_guard(void) {
+    /* A %define body that names itself (or chains into a cycle) used
+     * to recurse through get_const() until the host stack was
+     * exhausted -- fatal on DOS where the stack is ~4 KB. P3 added a
+     * 64-deep recursion guard. Verify the guard fires cleanly:
+     * %define A A produces an error rather than crashing. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%define A A\n"
+        "    mov ax, A\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+    return 0;
+}
+
+int test_asm_define_mutual_cycle_guard(void) {
+    /* Mutual %define cycle (A -> B -> A) -- also caught by the same
+     * recursion guard. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%define A B\n"
+        "%define B A\n"
+        "    mov ax, A\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+    return 0;
+}
+
+int test_asm_rel_offset_no_overflow_16bit(void) {
+    /* Regression: on a 16-bit host, jump-distance math used 'int' (16-bit
+     * signed) on both sides, so target labels >= 0x8000 with org >= 0x8000
+     * could compute a bogus signed difference and trigger spurious
+     * "Too long jump" errors. The fix promotes to int32_t.
+     *
+     * Drive it from a high org so outptr lives in the >= 0x8000 range.
+     *   org = 0x9000
+     *   0x9000: jmp far_target   -> e9 03 00   (rel16 disp = 3)
+     *   0x9003: nop
+     *   0x9004: nop
+     *   0x9005: nop
+     *   0x9006: far_target: ret
+     */
+    extern byte *outprog;
+    extern word outptr;
+    extern word org;
+    extern char is_org_def;
+    extern int errors;
+
+    reset_asm_state(TARGET_BIN);
+    org = 0x9000;
+    is_org_def = 1;
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "    jmp far_target\n"
+        "    nop\n"
+        "    nop\n"
+        "    nop\n"
+        "far_target:\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT_EQ_INT(0, errors);
+
+    /* Code starts at outprog[org] in this driver model — but the test
+     * harness writes to outprog[0..]; outptr begins at org and walks up.
+     * The bytes written start at outprog[org]. */
+    TEST_ASSERT_EQ_INT(0x9007, outptr);
+    TEST_ASSERT_EQ_INT(0xE9, outprog[0x9000]);
+    TEST_ASSERT_EQ_INT(0x03, outprog[0x9001]);
+    TEST_ASSERT_EQ_INT(0x00, outprog[0x9002]);
+    return 0;
+}
+
+int test_asm_label_value_high_16bit(void) {
+    /* Regression for the add_const(int value) signature bug: on a
+     * 16-bit host, label values >= 0x8000 would narrow through 'int'
+     * and sign-extend when assigned to c->value (int32_t). Verify
+     * the symbol table round-trips a high address verbatim. */
+    extern word org;
+    extern char is_org_def;
+    t_constant *c;
+
+    reset_asm_state(TARGET_BIN);
+    org = 0x9000;
+    is_org_def = 1;
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "    nop\n"
+        "foo:\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    c = find_const("FOO");
+    TEST_ASSERT(c != NULL);
+    TEST_ASSERT_EQ_INT(CONST_LABEL, CONST_TYPE(c));
+    TEST_ASSERT_EQ_INT(0x9001, c->value);
+
+    /* Verify $ is also captured at the full width. After the nop at
+     * 0x9000, $ on the 'foo:' line should be 0x9001. */
+    {
+        t_constant *dollar = find_const("$");
+        TEST_ASSERT(dollar != NULL);
+        /* $ is updated per line; final value reflects the last line
+         * processed. After 'ret' at 0x9001, $ is 0x9002 (end of file
+         * with no further line). Whatever value it holds, it must NOT
+         * be negative — that's the bug signature. */
+        TEST_ASSERT(dollar->value >= 0);
+    }
+    return 0;
+}
+
+int test_asm_macro_no_args(void) {
+    /* %macro with argc=0, invoked twice. The assembler's table picks
+     * the FF /6 group form for 'push <r16>' before the 0x50+r form, so
+     * each push ax / push bx emits 2 bytes (FF F0 / FF F3). Two
+     * invocations + ret = 9 bytes. */
+    extern byte *outprog;
+    extern word outptr;
+    static const unsigned char expected[] = {
+        0xFF, 0xF0, 0xFF, 0xF3,
+        0xFF, 0xF0, 0xFF, 0xF3,
+        0xC3
+    };
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%macro PUSHALL 0\n"
+        "    push ax\n"
+        "    push bx\n"
+        "%endmacro\n"
+        "    PUSHALL\n"
+        "    PUSHALL\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(sizeof(expected), outptr);
+    TEST_ASSERT_MEM_EQ(expected, outprog, sizeof(expected));
+    return 0;
+}
+
+int test_asm_macro_one_arg(void) {
+    /* %macro DELAY 1 with body 'mov cx, %1'. Two invocations with
+     * different args produce different mov immediates. */
+    extern byte *outprog;
+    extern word outptr;
+    static const unsigned char expected[] = {
+        0xB9, 0x0A, 0x00,
+        0xB9, 0x14, 0x00,
+        0xC3
+    };
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%macro DELAY 1\n"
+        "    mov cx, %1\n"
+        "%endmacro\n"
+        "    DELAY 10\n"
+        "    DELAY 20\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(sizeof(expected), outptr);
+    TEST_ASSERT_MEM_EQ(expected, outprog, sizeof(expected));
+    return 0;
+}
+
+int test_asm_macro_local_label(void) {
+    /* %%w inside a macro body becomes a per-invocation unique label.
+     * Two invocations produce two distinct internal labels, each loop
+     * resolving to its own .w.
+     *
+     *   %macro DELAY 1
+     *      mov cx, %1
+     *   %%w: loop %%w
+     *   %endmacro
+     *
+     *   DELAY 1   -> b9 01 00 e2 fe
+     *   DELAY 2   -> b9 02 00 e2 fe
+     *   ret       -> c3
+     */
+    extern byte *outprog;
+    extern word outptr;
+    static const unsigned char expected[] = {
+        0xB9, 0x01, 0x00, 0xE2, 0xFE,
+        0xB9, 0x02, 0x00, 0xE2, 0xFE,
+        0xC3
+    };
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%macro DELAY 1\n"
+        "    mov cx, %1\n"
+        "%%w:\n"
+        "    loop %%w\n"
+        "%endmacro\n"
+        "    DELAY 1\n"
+        "    DELAY 2\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(sizeof(expected), outptr);
+    TEST_ASSERT_MEM_EQ(expected, outprog, sizeof(expected));
+    return 0;
+}
+
+int test_asm_macro_argc_mismatch(void) {
+    /* Invoking a 1-arg macro with 0 args must error. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%macro DELAY 1\n"
+        "    mov cx, %1\n"
+        "%endmacro\n"
+        "    DELAY\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+    return 0;
+}
+
+int test_asm_include_basic(void) {
+    /* %include "file" reads file inline. A %define in the included
+     * file is visible to the caller after the include line. */
+    extern byte *outprog;
+    extern word outptr;
+    FILE *f;
+    static const unsigned char expected[] = {
+        0xB8, 0x34, 0x12,
+        0xC3
+    };
+    const char *inc_path = "TMPINC.ASM";
+
+    reset_asm_state(TARGET_BIN);
+
+    f = fopen(inc_path, "wb");
+    TEST_ASSERT(f != NULL);
+    fputs("%define K 0x1234\n", f);
+    fclose(f);
+
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%include \"TMPINC.ASM\"\n"
+        "    mov ax, K\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(sizeof(expected), outptr);
+    TEST_ASSERT_MEM_EQ(expected, outprog, sizeof(expected));
+
+    remove(inc_path);
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_include_unquoted(void) {
+    /* Path may be given without quotes; the token runs to end of
+     * line (whitespace already collapsed by strip). */
+    extern byte *outprog;
+    extern word outptr;
+    FILE *f;
+    const char *inc_path = "TMPINC.ASM";
+
+    reset_asm_state(TARGET_BIN);
+
+    f = fopen(inc_path, "wb");
+    TEST_ASSERT(f != NULL);
+    fputs("    nop\n", f);
+    fclose(f);
+
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%include TMPINC.ASM\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(2, outptr);
+    TEST_ASSERT_EQ_INT(0x90, outprog[0]);
+    TEST_ASSERT_EQ_INT(0xC3, outprog[1]);
+
+    remove(inc_path);
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_include_nested(void) {
+    /* Three-level include chain. Each inner file contributes a nop;
+     * the outermost emits ret last. */
+    extern byte *outprog;
+    extern word outptr;
+    FILE *f;
+    static const unsigned char expected[] = { 0x90, 0x90, 0x90, 0xC3 };
+
+    reset_asm_state(TARGET_BIN);
+
+    f = fopen("TMPI1.ASM", "wb");
+    TEST_ASSERT(f != NULL);
+    fputs("%include \"TMPI2.ASM\"\n    nop\n", f);
+    fclose(f);
+
+    f = fopen("TMPI2.ASM", "wb");
+    TEST_ASSERT(f != NULL);
+    fputs("%include \"TMPI3.ASM\"\n    nop\n", f);
+    fclose(f);
+
+    f = fopen("TMPI3.ASM", "wb");
+    TEST_ASSERT(f != NULL);
+    fputs("    nop\n", f);
+    fclose(f);
+
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%include \"TMPI1.ASM\"\n"
+        "    ret\n"));
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    TEST_ASSERT_EQ_INT(sizeof(expected), outptr);
+    TEST_ASSERT_MEM_EQ(expected, outprog, sizeof(expected));
+
+    remove("TMPI1.ASM");
+    remove("TMPI2.ASM");
+    remove("TMPI3.ASM");
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_include_missing_file(void) {
+    /* Missing include file emits an error. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%include \"NOSUCH.ASM\"\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_include_too_deep(void) {
+    /* A self-including file blows past the 8-deep cap and errors out
+     * rather than recursing until malloc fails. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+    FILE *f;
+    const char *self_inc = "TMPSELF.ASM";
+
+    reset_asm_state(TARGET_BIN);
+
+    /* TMPSELF.ASM includes itself unconditionally. */
+    f = fopen(self_inc, "wb");
+    TEST_ASSERT(f != NULL);
+    fputs("%include \"TMPSELF.ASM\"\n    nop\n", f);
+    fclose(f);
+
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%include \"TMPSELF.ASM\"\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+
+    remove(self_inc);
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_include_error_attribution(void) {
+    /* Diagnostic messages must point at the *included* file and the
+     * line within it, not the parent. We can't easily intercept the
+     * printf output from here, but we can inspect inputname/linenr at
+     * the moment the diagnostic fires by triggering an undefined-
+     * constant warning inside the included file and checking the
+     * exposed globals right after assembly finishes.
+     *
+     * After assemble() returns, inputname is restored to the caller's
+     * value -- so this test instead checks that errors were raised
+     * (proving the included file was parsed) and that inputname has
+     * been restored cleanly (no use-after-free on the outer pointer). */
+    extern int warnings;
+    extern byte quiet;
+    extern char *inputname;
+    int saved_warnings;
+    byte saved_quiet;
+    char *saved_inputname;
+    FILE *f;
+
+    reset_asm_state(TARGET_BIN);
+
+    f = fopen("TMPINC.ASM", "wb");
+    TEST_ASSERT(f != NULL);
+    /* Line 1 of the include defines K. Line 2 references an undefined
+     * symbol, which on pass 1 emits "Undefined constant 'NOPE'" as a
+     * warning. The diagnostic must attribute it to TMPINC.ASM:2. */
+    fputs("%define K 5\n    mov ax, NOPE\n", f);
+    fclose(f);
+
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%include \"TMPINC.ASM\"\n"
+        "    mov bx, K\n"
+        "    ret\n"));
+
+    saved_warnings = warnings;
+    saved_inputname = inputname;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(warnings > saved_warnings);   /* the undef-warning fired */
+    /* inputname must be restored to the caller's pointer (the outer
+     * file path), not leak as a malloced include name. */
+    TEST_ASSERT(inputname == saved_inputname);
+    quiet = saved_quiet;
+
+    remove("TMPINC.ASM");
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_macro_no_arbitrary_caps(void) {
+    /* Regression: storage was changed from fixed arrays to linked lists.
+     * Declare more %defines and more %macros than the old hard caps
+     * (256 each) and verify they all assemble. Also exercise a deep
+     * macro body to confirm no cap on per-macro body length. */
+    extern byte *outprog;
+    extern word outptr;
+    FILE *f;
+    int i;
+    int n = 300;   /* > old DEFINE_MAX/MACRO_MAX (256) */
+    int body_lines = 64;  /* moderate body to exercise the per-macro list */
+
+    reset_asm_state(TARGET_BIN);
+
+    f = fopen(TMP_ASM, "wb");
+    TEST_ASSERT(f != NULL);
+    /* 300 %defines numbered D1..D300, each value = its index. */
+    for(i = 1; i <= n; i++) {
+        fprintf(f, "%%define D%d %d\n", i, i);
+    }
+    /* A macro with 64 body lines, each a 1-byte nop. */
+    fprintf(f, "%%macro BIG 0\n");
+    for(i = 0; i < body_lines; i++) {
+        fprintf(f, "    nop\n");
+    }
+    fprintf(f, "%%endmacro\n");
+    /* 300 zero-arg macros, each containing a single 'nop'. */
+    for(i = 1; i <= n; i++) {
+        fprintf(f, "%%macro M%d 0\n    nop\n%%endmacro\n", i);
+    }
+    /* Use a few of the late %defines so resolution must walk the list. */
+    fprintf(f, "    mov ax, D250\n");
+    fprintf(f, "    mov bx, D299\n");
+    /* Invoke the big-body macro once and a late macro twice. */
+    fprintf(f, "    BIG\n");
+    fprintf(f, "    M299\n");
+    fprintf(f, "    M300\n");
+    fprintf(f, "    ret\n");
+    fclose(f);
+
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+
+    /* mov ax, 250 = B8 FA 00 (3 bytes)
+     * mov bx, 299 = BB 2B 01 (3 bytes)
+     * BIG         = 64 * 0x90 (64 bytes)
+     * M299        = 0x90 (1 byte)
+     * M300        = 0x90 (1 byte)
+     * ret         = 0xC3 (1 byte)
+     * Total       = 73 bytes
+     */
+    TEST_ASSERT_EQ_INT(3 + 3 + body_lines + 1 + 1 + 1, outptr);
+    TEST_ASSERT_EQ_INT(0xB8, outprog[0]);
+    TEST_ASSERT_EQ_INT(0xFA, outprog[1]);
+    TEST_ASSERT_EQ_INT(0x00, outprog[2]);
+    TEST_ASSERT_EQ_INT(0xBB, outprog[3]);
+    TEST_ASSERT_EQ_INT(0x2B, outprog[4]);
+    TEST_ASSERT_EQ_INT(0x01, outprog[5]);
+    /* The first byte of the BIG body should be 0x90. */
+    TEST_ASSERT_EQ_INT(0x90, outprog[6]);
+    /* And the very last code byte before ret should be a nop from M300. */
+    TEST_ASSERT_EQ_INT(0x90, outprog[outptr - 2]);
+    TEST_ASSERT_EQ_INT(0xC3, outprog[outptr - 1]);
+
+    remove(TMP_ASM);
+    return 0;
+}
+
+int test_asm_macro_nested_rejected(void) {
+    /* A %macro inside another %macro body is rejected. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%macro OUTER 0\n"
+        "%macro INNER 0\n"
+        "    nop\n"
+        "%endmacro\n"
+        "%endmacro\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+    return 0;
+}
+
+int test_asm_macro_recursion_guard(void) {
+    /* A %macro that invokes itself would expand without bound,
+     * exhausting heap. pp_macro_invoke counts in-flight invocations
+     * via macro_save_head and caps at 64. On overflow it emits
+     * "Macro recursion of 'M' too deep (cycle?)" and aborts the
+     * invocation, so assembly terminates cleanly. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%macro M 0\n"
+        "    nop\n"
+        "    M\n"
+        "%endmacro\n"
+        "    M\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+    return 0;
+}
+
+int test_asm_macro_mutual_recursion_guard(void) {
+    /* Mutual macro recursion (A invokes B which invokes A) is the
+     * same situation indirectly; the same 64-deep cap catches it. */
+    extern int errors;
+    extern byte quiet;
+    int saved_errors;
+    byte saved_quiet;
+
+    reset_asm_state(TARGET_BIN);
+    TEST_ASSERT_EQ_INT(0, write_asm(
+        "%macro A 0\n"
+        "    nop\n"
+        "    B\n"
+        "%endmacro\n"
+        "%macro B 0\n"
+        "    nop\n"
+        "    A\n"
+        "%endmacro\n"
+        "    A\n"
+        "    ret\n"));
+    saved_errors = errors;
+    saved_quiet  = quiet;
+    quiet = 0;
+    TEST_ASSERT_EQ_INT(0, assemble_twice());
+    TEST_ASSERT(errors > saved_errors);
+    quiet = saved_quiet;
+    return 0;
+}
+
 int test_asm_jmp_far_reg_rejected(void) {
     /* `jmp far ax` (or any register) is not a real 8086 form — the far
      * indirect path requires a memory operand (m16:16). Must error. */

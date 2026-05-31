@@ -82,7 +82,7 @@ int test_misc_decdigit_rejects_letters(void) {
 int test_misc_get_dword_terminator(void) {
     /* get_dword stops at the first non-digit and returns the pointer. */
     char buf[16];
-    long v;
+    int32_t v;
     char *tail;
     strcpy(buf, "0X10,REST");
     tail = get_dword(buf, &v);
