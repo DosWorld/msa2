@@ -46,15 +46,35 @@ between `.text`, `.data` and `.bss`. Use `RESB`, `RESW`, `RESD` inside `.bss`
 to reserve uninitialised storage; use `DB`, `DW`, `DD` in `.data` for
 initialised storage. See `original/doc/rdoff2-spec.md` for the file format.
 
+## Preprocessor
+
+NASM-style directives:
+
+* `%define NAME body` — single-line text alias for use in operands.
+* `%undef NAME` — remove a previously-defined alias.
+* `%macro NAME N` ... `%endmacro` — multi-line block macros with up
+  to 9 positional args (`%1`..`%9`) and per-invocation labels
+  (`%%name`).
+* `%include "file.asm"` — inline another source file. Nestable up to
+  8 levels deep; diagnostics inside an included file point at the
+  included file and its line, not the parent.
+
+Storage is unbounded (linked lists) — no compile-time cap on macro
+count, define count, or include depth besides the explicit limits
+above. See `original/doc/DOC.TXT` for the full reference.
+
 ## Differences with MSA
 
 * Added missed opcodes
 * Added .exe generation
 * Added .rdf generation
+* Added macros
+* Added defines
+* Added including file
 
 ## Differences with NASM
 
-* No macros / includes
+* Limited macros / defines
 * No conditional jumps optimization (near/short)
 
 ## Build MSA2
@@ -66,10 +86,12 @@ GCC, GCC/MINGW.
 
 To build DOS version with Watcom C, just type (in original/src/)
 
+    cd original\src
     make
 
 or
 
+    cd original\src
     wmake
 
 ### Linux / macOS (POSIX)
